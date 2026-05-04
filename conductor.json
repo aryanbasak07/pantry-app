@@ -1,7 +1,6 @@
 {
   "scripts": {
     "setup": "npm install",
-    "run": "pnpm dev --port $CONDUCTOR_PORT --strictPort"
-  },
-  "runScriptMode": "nonconcurrent"
+    "run": "npm run dev"
+  }
 }
