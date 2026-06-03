@@ -469,6 +469,7 @@
            <div class="field"><label>Partner's name</label><input type="text" id="s-partner" value="${esc(names[1] || "Partner")}" /></div>
            <button class="btn btn--primary" data-act="save-settings">Save</button>`}
       <div style="height:14px"></div><div class="divider"></div>
+      ${!isStandalone() ? `<button class="btn btn--ghost btn--sm" data-act="install-now">📲 Install app</button><div style="height:8px"></div>` : ""}
       <button class="btn btn--ghost btn--sm" data-act="sample">Load sample items</button>
       <div style="height:8px"></div>
       <button class="btn btn--ghost btn--sm" data-act="reset" style="color:var(--red)">${cloud ? "Leave kitchen / clear" : "Clear all data"}</button>
@@ -545,6 +546,44 @@
   let toastTimer;
   function toast(msg) { const el = document.getElementById("toast"); el.textContent = msg; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 1800); }
 
+  // ---------- Install prompt (Add to Home Screen) ----------
+  let deferredInstall = null;
+  const isStandalone = () => window.matchMedia("(display-mode: standalone)").matches || window.navigator.standalone === true;
+  const isIOS = () => /iphone|ipad|ipod/i.test(navigator.userAgent);
+  const installDismissed = () => { try { return localStorage.getItem("pantry.install.dismissed") === "1"; } catch (_) { return false; } };
+  window.addEventListener("beforeinstallprompt", (e) => { e.preventDefault(); deferredInstall = e; if (!installDismissed()) showInstallBar("prompt"); });
+  window.addEventListener("appinstalled", () => { removeInstallBar(); deferredInstall = null; toast("Installed 🎉"); });
+
+  function maybeShowInstallHint() {
+    if (isStandalone() || installDismissed()) return;
+    if (isIOS()) showInstallBar("ios");           // iOS has no beforeinstallprompt
+    // Chrome/Edge/Android: the beforeinstallprompt listener shows the bar when ready.
+  }
+  function showInstallBar(kind) {
+    if (isStandalone() || document.getElementById("install-bar")) return;
+    const bar = document.createElement("div");
+    bar.className = "install-bar"; bar.id = "install-bar";
+    bar.innerHTML = kind === "ios"
+      ? `<span class="ib-ico">📲</span><div class="ib-txt">Install Pantry<small>Tap the Share button, then “Add to Home Screen”.</small></div>
+         <button class="btn btn--ghost btn--sm" data-act="install-dismiss">Got it</button>`
+      : `<span class="ib-ico">📲</span><div class="ib-txt">Install Pantry as an app<small>One tap from your home screen + notifications.</small></div>
+         <button class="btn btn--primary btn--sm" data-act="install-now">Install</button>
+         <button class="btn btn--ghost btn--sm" data-act="install-dismiss" aria-label="Dismiss">✕</button>`;
+    document.body.appendChild(bar);
+  }
+  function removeInstallBar() { const b = document.getElementById("install-bar"); if (b) b.remove(); }
+  async function doInstall() {
+    if (!deferredInstall) {
+      toast(isIOS() ? "Share → Add to Home Screen" : "Open your browser menu → Install app");
+      return;
+    }
+    deferredInstall.prompt();
+    const choice = await deferredInstall.userChoice.catch(() => ({ outcome: "dismissed" }));
+    deferredInstall = null; removeInstallBar();
+    if (choice.outcome !== "accepted") { try { localStorage.setItem("pantry.install.dismissed", "1"); } catch (_) {} }
+  }
+  function dismissInstall() { try { localStorage.setItem("pantry.install.dismissed", "1"); } catch (_) {} removeInstallBar(); }
+
   // ---------- Event delegation ----------
   document.addEventListener("click", (e) => {
     const tab = e.target.closest(".tab");
@@ -567,6 +606,8 @@
       case "join-hh": doJoin(); break;
       case "import": Data.importLocalItems().then(() => { render(); toast("Imported"); }); break;
       case "skip-import": Data.skipImport(); render(); break;
+      case "install-now": doInstall(); break;
+      case "install-dismiss": dismissInstall(); break;
       case "reset": if (confirm("Clear all data on this device?")) { Data.reset().then(() => { setScreen("home"); toast("Cleared"); }); } break;
       case "close": closeModal(); break;
     }
@@ -581,4 +622,5 @@
   // ---------- Boot ----------
   Data.onChange(() => render());
   Data.init().then(() => setScreen("home")).catch(() => setScreen("home"));
+  setTimeout(maybeShowInstallHint, 1500);
 })();

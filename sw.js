@@ -1,9 +1,10 @@
 // Minimal offline cache for the app shell. The app's data lives in
 // localStorage, so once the shell is cached the app works fully offline.
-const CACHE = "pantry-v4";
+const CACHE = "pantry-v5";
+// Note: do NOT list "./index.html" — on Vercel cleanUrls 308-redirects it to "./",
+// and a redirected response makes cache.addAll reject, aborting SW install.
 const SHELL = [
   "./",
-  "./index.html",
   "./src/styles.css",
   "./src/app.js",
   "./src/sync.js",
@@ -13,7 +14,16 @@ const SHELL = [
 ];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)));
+  // Cache each URL independently so one redirect/404 can't abort the whole install.
+  event.waitUntil(
+    caches.open(CACHE).then((cache) =>
+      Promise.all(SHELL.map((url) =>
+        fetch(url, { cache: "no-cache" })
+          .then((res) => (res.ok && !res.redirected ? cache.put(url, res) : null))
+          .catch(() => null)
+      ))
+    )
+  );
   self.skipWaiting();
 });
 
