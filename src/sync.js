@@ -266,6 +266,20 @@ window.Data = (() => {
     return r.id;
   }
 
+  // ---------- Push subscriptions (Phase 4) ----------
+  function pushSupported() { return mode === "cloud" && !!household; }
+  async function saveSubscription(subJson) {
+    if (!pushSupported()) throw new Error("Sharing must be on to enable alerts");
+    const { error } = await sb.from("push_subscriptions").upsert(
+      { household_id: household.id, user_id: uid, endpoint: subJson.endpoint, subscription: subJson },
+      { onConflict: "endpoint" });
+    if (error) throw error;
+  }
+  async function removeSubscription(endpoint) {
+    if (mode !== "cloud" || !endpoint) return;
+    await sb.from("push_subscriptions").delete().eq("endpoint", endpoint);
+  }
+
   // ---------- Sample / reset ----------
   function loadSample(sample) { sample.forEach((s) => add(s)); }
   async function reset() {
@@ -281,6 +295,7 @@ window.Data = (() => {
     householdName: () => household && household.name,
     items: () => items, catFresh: CAT_FRESH,
     receipts: () => receipts, pullReceipts, addReceipt,
+    pushSupported, saveSubscription, removeSubscription,
     add, update, remove,
     createHousehold, joinHousehold,
     memberNames, myName, setMyName, setLocalNames,

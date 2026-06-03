@@ -458,7 +458,12 @@
         ? `<div class="banner">✅ Shared kitchen${code ? ` · code <strong>${esc(code)}</strong>` : ""}</div>
            ${code ? `<p class="muted-note">Share this code with your partner so they can join from their phone.</p><div style="height:10px"></div>` : ""}
            <div class="field"><label>Your name</label><input type="text" id="s-me" value="${esc(Data.myName())}" /></div>
-           <button class="btn btn--primary" data-act="save-settings">Save</button>`
+           <button class="btn btn--primary" data-act="save-settings">Save</button>
+           <div class="toggle-row" style="margin-top:16px">
+             <span class="t-lbl">🔔 Morning alerts</span>
+             <label class="switch"><input type="checkbox" id="s-alerts" /><span class="slider"></span></label>
+           </div>
+           <p class="muted-note" style="margin-top:8px">A daily nudge when items need eating. On iPhone, add the app to your Home Screen first.</p>`
         : `<div class="banner">Local mode · data is on this device only. (Sharing turns on once Supabase anonymous sign-ins are enabled.)</div>
            <div class="field"><label>Your name</label><input type="text" id="s-me" value="${esc(names[0])}" /></div>
            <div class="field"><label>Partner's name</label><input type="text" id="s-partner" value="${esc(names[1] || "Partner")}" /></div>
@@ -472,7 +477,47 @@
     </div>`;
     document.body.appendChild(m);
     m.addEventListener("click", (e) => { if (e.target === m) closeModal(); });
+    const alerts = m.querySelector("#s-alerts");
+    if (alerts) {
+      alerts.checked = (typeof Notification !== "undefined" && Notification.permission === "granted");
+      alerts.addEventListener("change", async (e) => {
+        if (e.target.checked) { const ok = await enableNotifications(); e.target.checked = ok; }
+        else { await disableNotifications(); }
+      });
+    }
   }
+
+  // ---------- Push notifications ----------
+  function urlBase64ToUint8Array(base64) {
+    const pad = "=".repeat((4 - (base64.length % 4)) % 4);
+    const b64 = (base64 + pad).replace(/-/g, "+").replace(/_/g, "/");
+    const raw = atob(b64);
+    const out = new Uint8Array(raw.length);
+    for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+    return out;
+  }
+  async function enableNotifications() {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") { toast("Not supported on this device"); return false; }
+    if (Data.mode() !== "cloud" || !Data.pushSupported()) { toast("Turn on sharing first"); return false; }
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== "granted") { toast("Notifications blocked"); return false; }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(window.PANTRY_CONFIG.vapidPublic) });
+      await Data.saveSubscription(sub.toJSON());
+      toast("Morning alerts on"); return true;
+    } catch (e) { console.error(e); toast("Couldn't enable alerts"); return false; }
+  }
+  async function disableNotifications() {
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      const sub = await reg.pushManager.getSubscription();
+      if (sub) { await Data.removeSubscription(sub.endpoint); await sub.unsubscribe(); }
+      toast("Alerts off");
+    } catch (_) {}
+  }
+
   async function saveSettings() {
     if (Data.mode() === "cloud") { await Data.setMyName(document.getElementById("s-me").value); }
     else { Data.setLocalNames(document.getElementById("s-me").value.trim(), document.getElementById("s-partner").value.trim()); }

@@ -1,0 +1,8 @@
+{
+  "name": "pantry-app",
+  "private": true,
+  "description": "Serverless function dependencies for Pantry & Spend (the web app itself has no build step).",
+  "dependencies": {
+    "web-push": "^3.6.7"
+  }
+}
