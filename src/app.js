@@ -474,10 +474,14 @@
       <div style="height:8px"></div>
       <button class="btn btn--ghost btn--sm" data-act="reset" style="color:var(--red)">${cloud ? "Leave kitchen / clear" : "Clear all data"}</button>
       <div style="height:8px"></div>
+      <details style="margin-top:6px"><summary class="muted-note" style="cursor:pointer">Diagnostics</summary>
+        <pre id="s-diag" style="font-size:11px;white-space:pre-wrap;color:var(--muted);margin:8px 0 0">…</pre></details>
+      <div style="height:8px"></div>
       <button class="btn btn--ghost btn--sm" data-act="close">Close</button>
     </div>`;
     document.body.appendChild(m);
     m.addEventListener("click", (e) => { if (e.target === m) closeModal(); });
+    fillDiag();
     const alerts = m.querySelector("#s-alerts");
     if (alerts) {
       alerts.checked = (typeof Notification !== "undefined" && Notification.permission === "granted");
@@ -486,6 +490,25 @@
         else { await disableNotifications(); }
       });
     }
+  }
+
+  async function fillDiag() {
+    const el = document.getElementById("s-diag"); if (!el) return;
+    const L = [];
+    L.push("platform: " + (isIOS() ? (iosNonSafari() ? "iOS (not Safari)" : "iOS Safari") : "other"));
+    L.push("installed (standalone): " + isStandalone());
+    L.push("mode: " + Data.mode() + (Data.pushSupported && Data.pushSupported() ? " · paired" : " · not paired"));
+    L.push("Notification API: " + (typeof Notification !== "undefined" ? Notification.permission : "unavailable"));
+    L.push("Push API: " + (("PushManager" in window) ? "yes" : "no"));
+    L.push("install prompt ready: " + !!deferredInstall);
+    try {
+      if ("serviceWorker" in navigator) {
+        const reg = await navigator.serviceWorker.getRegistration();
+        L.push("service worker: " + (reg ? (reg.active ? "active" : reg.installing ? "installing" : "registered") : "none"));
+        if (reg) { const s = await reg.pushManager.getSubscription(); L.push("push subscription: " + (s ? "yes" : "none")); }
+      } else L.push("service worker: unsupported");
+    } catch (e) { L.push("sw error: " + e.message); }
+    el.textContent = L.join("\n");
   }
 
   // ---------- Push notifications ----------
@@ -498,17 +521,29 @@
     return out;
   }
   async function enableNotifications() {
-    if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") { toast("Not supported on this device"); return false; }
-    if (Data.mode() !== "cloud" || !Data.pushSupported()) { toast("Turn on sharing first"); return false; }
+    // iOS: web push only exists inside the installed Home-Screen app.
+    if (isIOS() && !isStandalone()) { showIOSInstallHelp(); return false; }
+    if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") {
+      alert(isIOS()
+        ? "Notifications need the installed app. Add Pantry to your Home Screen (Safari → Share → Add to Home Screen) and open it from there, then turn alerts on."
+        : "This browser doesn't support notifications. Try Chrome, Edge, or Safari.");
+      return false;
+    }
+    if (Data.mode() !== "cloud" || !Data.pushSupported()) { alert("Create or join a shared kitchen first (the pairing step), then enable alerts."); return false; }
+    if (Notification.permission === "denied") {
+      alert("Notifications are blocked for this app. On iPhone: Settings → Notifications → Pantry → Allow. On Chrome: site settings → Notifications → Allow. Then try again.");
+      return false;
+    }
     try {
       const perm = await Notification.requestPermission();
-      if (perm !== "granted") { toast("Notifications blocked"); return false; }
+      if (perm !== "granted") { toast("Notifications not allowed"); return false; }
       const reg = await navigator.serviceWorker.ready;
       let sub = await reg.pushManager.getSubscription();
       if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(window.PANTRY_CONFIG.vapidPublic) });
       await Data.saveSubscription(sub.toJSON());
+      try { await reg.showNotification("Morning alerts are on ✓", { body: "You'll get a daily nudge when food needs eating.", icon: "./public/icon-192.png", badge: "./public/icon-192.png" }); } catch (_) {}
       toast("Morning alerts on"); return true;
-    } catch (e) { console.error(e); toast("Couldn't enable alerts"); return false; }
+    } catch (e) { console.error(e); alert("Couldn't enable alerts: " + ((e && e.message) || e)); return false; }
   }
   async function disableNotifications() {
     try {
@@ -559,22 +594,51 @@
     if (isIOS()) showInstallBar("ios");           // iOS has no beforeinstallprompt
     // Chrome/Edge/Android: the beforeinstallprompt listener shows the bar when ready.
   }
+  const iosNonSafari = () => isIOS() && /crios|fxios|edgios|opios/i.test(navigator.userAgent);
   function showInstallBar(kind) {
     if (isStandalone() || document.getElementById("install-bar")) return;
     const bar = document.createElement("div");
     bar.className = "install-bar"; bar.id = "install-bar";
     bar.innerHTML = kind === "ios"
-      ? `<span class="ib-ico">📲</span><div class="ib-txt">Install Pantry<small>Tap the Share button, then “Add to Home Screen”.</small></div>
-         <button class="btn btn--ghost btn--sm" data-act="install-dismiss">Got it</button>`
+      ? `<span class="ib-ico">📲</span><div class="ib-txt">Install Pantry on your iPhone<small>Tap to see how — needed for notifications.</small></div>
+         <button class="btn btn--primary btn--sm" data-act="ios-help">How</button>
+         <button class="btn btn--ghost btn--sm" data-act="install-dismiss" aria-label="Dismiss">✕</button>`
       : `<span class="ib-ico">📲</span><div class="ib-txt">Install Pantry as an app<small>One tap from your home screen + notifications.</small></div>
          <button class="btn btn--primary btn--sm" data-act="install-now">Install</button>
          <button class="btn btn--ghost btn--sm" data-act="install-dismiss" aria-label="Dismiss">✕</button>`;
     document.body.appendChild(bar);
   }
   function removeInstallBar() { const b = document.getElementById("install-bar"); if (b) b.remove(); }
+
+  // iOS can't install programmatically — show step-by-step instructions instead.
+  function showIOSInstallHelp() {
+    closeModal();
+    const m = document.createElement("div");
+    m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>Add Pantry to your Home Screen</h2>
+      ${iosNonSafari()
+        ? `<div class="banner" style="background:var(--amber-soft);color:var(--amber)">Open this page in <strong>Safari</strong> first — Chrome and other iPhone browsers can't add apps to the Home Screen.</div>`
+        : ""}
+      <ol class="muted-note" style="font-size:15px;line-height:1.8;padding-left:20px;color:var(--ink)">
+        <li>In <strong>Safari</strong>, tap the <strong>Share</strong> button (the square with an ↑ arrow, at the bottom of the screen).</li>
+        <li>Scroll down and tap <strong>“Add to Home Screen”</strong>.</li>
+        <li>Tap <strong>Add</strong> (top-right).</li>
+        <li>Open <strong>Pantry</strong> from your Home Screen icon — <em>not</em> the Safari tab.</li>
+        <li>Then come back to <strong>⚙️ Settings → 🔔 Morning alerts</strong> to switch on notifications.</li>
+      </ol>
+      <p class="muted-note">Notifications on iPhone only work from the installed Home-Screen app (iOS 16.4+).</p>
+      <button class="btn btn--primary" data-act="close">Got it</button>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => { if (e.target === m) closeModal(); });
+  }
+
   async function doInstall() {
+    if (isStandalone()) { toast("Already installed ✓"); return; }
+    if (isIOS()) { showIOSInstallHelp(); return; }
     if (!deferredInstall) {
-      toast(isIOS() ? "Share → Add to Home Screen" : "Open your browser menu → Install app");
+      alert("No install prompt yet. Reload the page once, then either use this button again or open Chrome's ⋮ menu → “Install Pantry…”. (Chrome marks the app installable a few seconds after loading.)");
       return;
     }
     deferredInstall.prompt();
@@ -607,6 +671,7 @@
       case "import": Data.importLocalItems().then(() => { render(); toast("Imported"); }); break;
       case "skip-import": Data.skipImport(); render(); break;
       case "install-now": doInstall(); break;
+      case "ios-help": showIOSInstallHelp(); break;
       case "install-dismiss": dismissInstall(); break;
       case "reset": if (confirm("Clear all data on this device?")) { Data.reset().then(() => { setScreen("home"); toast("Cleared"); }); } break;
       case "close": closeModal(); break;

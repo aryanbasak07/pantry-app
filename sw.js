@@ -1,6 +1,6 @@
 // Minimal offline cache for the app shell. The app's data lives in
 // localStorage, so once the shell is cached the app works fully offline.
-const CACHE = "pantry-v5";
+const CACHE = "pantry-v6";
 // Note: do NOT list "./index.html" — on Vercel cleanUrls 308-redirects it to "./",
 // and a redirected response makes cache.addAll reject, aborting SW install.
 const SHELL = [
@@ -61,17 +61,27 @@ self.addEventListener("notificationclick", (event) => {
 });
 
 self.addEventListener("fetch", (event) => {
-  if (event.request.method !== "GET") return;
-  event.respondWith(
-    caches.match(event.request).then((cached) => {
-      const network = fetch(event.request)
+  const req = event.request;
+  if (req.method !== "GET") return;
+  const sameOrigin = new URL(req.url).origin === self.location.origin;
+
+  if (sameOrigin) {
+    // Network-first for our own HTML/JS/CSS so code updates appear immediately;
+    // fall back to cache only when offline.
+    event.respondWith(
+      fetch(req)
         .then((res) => {
-          const copy = res.clone();
-          caches.open(CACHE).then((c) => c.put(event.request, copy)).catch(() => {});
+          if (res.ok && !res.redirected) {
+            const copy = res.clone();
+            caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+          }
           return res;
         })
-        .catch(() => cached);
-      return cached || network;
-    })
-  );
+        .catch(() => caches.match(req))
+    );
+    return;
+  }
+
+  // Cross-origin (e.g. the supabase-js CDN): cache-first.
+  event.respondWith(caches.match(req).then((cached) => cached || fetch(req)));
 });
