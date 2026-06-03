@@ -22,6 +22,9 @@ window.Data = (() => {
   let members = [];           // [{user_id, name}]
   let items = [];             // app-shaped items (the render source of truth)
   let receipts = [];          // app-shaped receipts (spend tracking)
+  let spendCats = [];         // custom spend category names
+  let budgets = [];           // [{category, monthly}]
+  let settlements = [];       // [{id, from, to, amount, date}]
   let needsPairing = false;
   const listeners = [];
 
@@ -167,7 +170,7 @@ window.Data = (() => {
   async function resync() {
     if (mode !== "cloud" || !household) return;
     setSyncing(true);
-    try { await pullItems(); await pullReceipts(); } finally { setSyncing(false); }
+    try { await pullItems(); await pullReceipts(); await pullSpendMeta(); } finally { setSyncing(false); }
   }
   function onResume() {
     online = (typeof navigator !== "undefined" && "onLine" in navigator) ? navigator.onLine : true;
@@ -199,6 +202,8 @@ window.Data = (() => {
         if (op.t === "upsert") { const { error } = await sb.from("items").upsert(op.row); if (error) throw error; }
         else if (op.t === "delete") { const { error } = await sb.from("items").delete().eq("id", op.id); if (error) throw error; }
         else if (op.t === "receipt") { const { error } = await sb.from("receipts").insert(op.row); if (error) throw error; }
+        else if (op.t === "receipt_update") { const { error } = await sb.from("receipts").update(op.row).eq("id", op.id); if (error) throw error; }
+        else if (op.t === "receipt_delete") { const { error } = await sb.from("receipts").delete().eq("id", op.id); if (error) throw error; }
       } catch (_) { remain.push(op); }
     }
     lsSet(outboxKey(household.id), remain);
@@ -301,8 +306,8 @@ window.Data = (() => {
 
   // ---------- Receipts / spend ----------
   const RC_LOCAL = "pantry.receipts.local";
-  const fromReceiptRow = (r) => ({ id: r.id, store: r.store, date: r.purchased_date, currency: r.currency, total: r.total, items: r.line_items || [], createdBy: r.created_by, createdAt: r.created_at ? Date.parse(r.created_at) : Date.now() });
-  const toReceiptRow = (r) => ({ id: r.id, household_id: household && household.id, store: r.store || null, purchased_date: r.date || null, currency: r.currency || null, total: r.total != null ? r.total : null, line_items: r.items || [], created_by: r.createdBy || null });
+  const fromReceiptRow = (r) => ({ id: r.id, store: r.store, date: r.purchased_date, currency: r.currency, total: r.total, items: r.line_items || [], paidBy: r.paid_by, split: r.split || "shared", createdBy: r.created_by, createdAt: r.created_at ? Date.parse(r.created_at) : Date.now() });
+  const toReceiptRow = (r) => ({ id: r.id, household_id: household && household.id, store: r.store || null, purchased_date: r.date || null, currency: r.currency || null, total: r.total != null ? r.total : null, line_items: r.items || [], paid_by: r.paidBy || null, split: r.split || "shared", created_by: r.createdBy || null });
 
   async function pullReceipts() {
     if (mode === "cloud" && household) {
@@ -320,9 +325,62 @@ window.Data = (() => {
     r.createdBy = r.createdBy || myName();
     r.createdAt = Date.now();
     receipts.unshift(r); emit();
-    if (mode === "cloud" && household) { try { const { error } = await sb.from("receipts").insert(toReceiptRow(r)); if (error) throw error; } catch (_) { queue({ t: "receipt", row: toReceiptRow(r) }); } }
+    if (mode === "cloud" && household) { try { const { error } = await sb.from("receipts").insert(toReceiptRow(r)); if (error) throw error; } catch (_) { queue({ t: "receipt", row: toReceiptRow(r) }); scheduleFlush(); } }
     else { lsSet(RC_LOCAL, receipts); }
     return r.id;
+  }
+  async function updateReceipt(r) {
+    const idx = receipts.findIndex((x) => x.id === r.id); if (idx >= 0) receipts[idx] = r; emit();
+    if (mode === "cloud" && household) { try { const { error } = await sb.from("receipts").update(toReceiptRow(r)).eq("id", r.id); if (error) throw error; } catch (_) { queue({ t: "receipt_update", id: r.id, row: toReceiptRow(r) }); scheduleFlush(); } }
+    else { lsSet(RC_LOCAL, receipts); }
+  }
+  async function removeReceipt(id) {
+    receipts = receipts.filter((r) => r.id !== id); emit();
+    if (mode === "cloud" && household) { try { const { error } = await sb.from("receipts").delete().eq("id", id); if (error) throw error; } catch (_) { queue({ t: "receipt_delete", id }); scheduleFlush(); } }
+    else { lsSet(RC_LOCAL, receipts); }
+  }
+
+  // ---------- Spend meta: custom categories, budgets, settlements ----------
+  const SC_LOCAL = "pantry.spendcats.local", BD_LOCAL = "pantry.budgets.local", ST_LOCAL = "pantry.settlements.local";
+  const dateStr = () => new Date().toISOString().slice(0, 10);
+  async function pullSpendMeta() {
+    if (mode === "cloud" && household) {
+      const [c, b, s] = await Promise.all([
+        sb.from("spend_categories").select("name").eq("household_id", household.id),
+        sb.from("budgets").select("category,monthly").eq("household_id", household.id),
+        sb.from("settlements").select("*").eq("household_id", household.id),
+      ]);
+      spendCats = (c.data || []).map((x) => x.name);
+      budgets = (b.data || []).map((x) => ({ category: x.category, monthly: Number(x.monthly) }));
+      settlements = (s.data || []).map((x) => ({ id: x.id, from: x.from_member, to: x.to_member, amount: Number(x.amount), date: x.date }));
+    } else {
+      spendCats = lsGet(SC_LOCAL, []); budgets = lsGet(BD_LOCAL, []); settlements = lsGet(ST_LOCAL, []);
+    }
+    emit();
+  }
+  async function pullSpend() { await pullReceipts(); await pullSpendMeta(); }
+  async function addSpendCategory(name) {
+    name = (name || "").trim(); if (!name || spendCats.includes(name)) return;
+    spendCats.push(name); emit();
+    if (mode === "cloud" && household) { try { await sb.from("spend_categories").insert({ household_id: household.id, name }); } catch (_) {} }
+    else lsSet(SC_LOCAL, spendCats);
+  }
+  async function setBudget(category, monthly) {
+    monthly = Number(monthly) || 0;
+    const i = budgets.findIndex((b) => b.category === category);
+    if (monthly <= 0) budgets = budgets.filter((b) => b.category !== category);
+    else if (i >= 0) budgets[i].monthly = monthly; else budgets.push({ category, monthly });
+    emit();
+    if (mode === "cloud" && household) {
+      try { if (monthly <= 0) await sb.from("budgets").delete().eq("household_id", household.id).eq("category", category); else await sb.from("budgets").upsert({ household_id: household.id, category, monthly }); } catch (_) {}
+    } else lsSet(BD_LOCAL, budgets);
+  }
+  async function addSettlement(from, to, amount) {
+    amount = Number(amount) || 0; if (amount <= 0) return;
+    const s = { id: uuid(), from, to, amount, date: dateStr() };
+    settlements.push(s); emit();
+    if (mode === "cloud" && household) { try { await sb.from("settlements").insert({ household_id: household.id, from_member: from, to_member: to, amount, date: s.date }); } catch (_) {} }
+    else lsSet(ST_LOCAL, settlements);
   }
 
   // ---------- Push subscriptions (Phase 4) ----------
@@ -343,8 +401,8 @@ window.Data = (() => {
   function loadSample(sample) { sample.forEach((s) => add(s)); }
   async function reset() {
     if (mode === "cloud") { try { if (channel) sb.removeChannel(channel); await sb.auth.signOut(); } catch (_) {} }
-    try { localStorage.removeItem(LS_LOCAL); localStorage.removeItem(RC_LOCAL); if (household) { localStorage.removeItem(cacheKey(household.id)); localStorage.removeItem(outboxKey(household.id)); localStorage.removeItem(importedKey(household.id)); localStorage.removeItem("pantry.receipts.cloud." + household.id); } } catch (_) {}
-    items = []; receipts = []; household = null; members = [];
+    try { localStorage.removeItem(LS_LOCAL); localStorage.removeItem(RC_LOCAL); localStorage.removeItem(SC_LOCAL); localStorage.removeItem(BD_LOCAL); localStorage.removeItem(ST_LOCAL); if (household) { localStorage.removeItem(cacheKey(household.id)); localStorage.removeItem(outboxKey(household.id)); localStorage.removeItem(importedKey(household.id)); localStorage.removeItem("pantry.receipts.cloud." + household.id); } } catch (_) {}
+    items = []; receipts = []; spendCats = []; budgets = []; settlements = []; household = null; members = [];
   }
 
   return {
@@ -355,7 +413,10 @@ window.Data = (() => {
     rotateInviteCode,
     householdName: () => household && household.name,
     items: () => items, catFresh: CAT_FRESH,
-    receipts: () => receipts, pullReceipts, addReceipt,
+    receipts: () => receipts, pullReceipts, pullSpend, addReceipt, updateReceipt, removeReceipt,
+    spendCategories: () => spendCats, addSpendCategory,
+    budgets: () => budgets, setBudget,
+    settlements: () => settlements, addSettlement,
     pushSupported, saveSubscription, removeSubscription,
     add, update, remove,
     createHousehold, joinHousehold,

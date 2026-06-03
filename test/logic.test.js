@@ -33,5 +33,32 @@ t("rejects negative qty", () => assert.strictEqual(L.validateItem({ name: "x", c
 t("repairs freshnessDays<1 to 7", () => assert.strictEqual(L.validateItem({ name: "x", category: "meat", freshnessDays: 0 }).cleaned.freshnessDays, 7));
 t("accepts a valid item", () => assert.strictEqual(L.validateItem({ name: "Milk", category: "packaged", qty: 1, freshnessDays: 7 }).ok, true));
 
+// ----- budgets -----
+const monthRs = [
+  { date: "2026-06-02", total: 1000, items: [{ price: 600, category: "meat" }, { price: 400, category: "cigarettes" }] },
+  { date: "2026-06-20", total: 500, items: [{ price: 500, category: "dry" }] },
+  { date: "2026-05-30", total: 999, items: [{ price: 999, category: "meat" }] },
+];
+t("monthSpend total for June", () => assert.strictEqual(L.monthSpend(monthRs, "2026-06").total, 1500));
+t("monthSpend custom category", () => assert.strictEqual(L.monthSpend(monthRs, "2026-06").byCat.cigarettes, 400));
+t("budgetProgress over budget", () => {
+  const p = L.budgetProgress(monthRs, [{ category: "TOTAL", monthly: 1000 }], "2026-06");
+  assert.strictEqual(p[0].spent, 1500); assert.strictEqual(p[0].pct, 150);
+});
+
+// ----- couple accounting -----
+t("A paid shared -> B owes A half", () => {
+  const b = L.computeBalances([{ total: 1000, paidBy: "A", split: "shared" }], ["A", "B"], []);
+  assert.deepStrictEqual(b.owe, { from: "B", to: "A", amount: 500 });
+});
+t("personal receipt does not create debt", () => {
+  const b = L.computeBalances([{ total: 300, paidBy: "B", split: "personal" }], ["A", "B"], []);
+  assert.strictEqual(b.owe, null);
+});
+t("settlement reduces the debt", () => {
+  const b = L.computeBalances([{ total: 1000, paidBy: "A", split: "shared" }], ["A", "B"], [{ from: "B", to: "A", amount: 200 }]);
+  assert.deepStrictEqual(b.owe, { from: "B", to: "A", amount: 300 });
+});
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

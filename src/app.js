@@ -39,7 +39,7 @@
     screen = s;
     document.getElementById("screen-title").textContent = TITLES[s] || "Pantry";
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.screen === s));
-    if (s === "spend" && Data.pullReceipts) Data.pullReceipts();
+    if (s === "spend" && Data.pullSpend) Data.pullSpend();
     render();
   }
 
@@ -165,21 +165,90 @@
     const s = Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
     return cur ? `${cur} ${s}` : s;
   }
+  // spend category helpers
+  function spendCurrency(rs) { const r = rs.find((x) => x.currency); return r ? r.currency : ""; }
+  function plainCatLabel(c) { return CATEGORIES[c] ? CATEGORIES[c].label : c === "other" ? "Other" : c; }
+  function catLabel(c) { return CATEGORIES[c] ? `${CATEGORIES[c].emoji} ${CATEGORIES[c].label}` : c === "other" ? "🧾 Other" : "🏷️ " + c; }
+  function allSpendCats() {
+    const base = ["vegetables", "fruits", "meat", "packaged", "dry", "other"];
+    const custom = (Data.spendCategories && Data.spendCategories()) || [];
+    return base.concat(custom.filter((c) => !base.includes(c)));
+  }
+  function catOptions(sel) {
+    const list = allSpendCats();
+    let opts = list.map((c) => `<option value="${esc(c)}" ${c === sel ? "selected" : ""}>${esc(plainCatLabel(c))}</option>`).join("");
+    if (sel && list.indexOf(sel) < 0) opts = `<option value="${esc(sel)}" selected>${esc(sel)}</option>` + opts;
+    return opts + `<option value="__new__">＋ New category…</option>`;
+  }
+  // handle the "＋ New category" option in any .ri-cat <select> inside a modal
+  function wireCatSelect(m) {
+    m.addEventListener("change", (e) => {
+      const sel = e.target.closest(".ri-cat"); if (!sel) return;
+      if (sel.value === "__new__") {
+        const name = (prompt("New category (e.g. Cigarettes):") || "").trim();
+        if (name) {
+          Data.addSpendCategory(name);
+          m.querySelectorAll(".ri-cat").forEach((s) => {
+            if (!Array.from(s.options).some((o) => o.value === name)) {
+              const o = document.createElement("option"); o.value = name; o.textContent = name;
+              s.insertBefore(o, s.options[s.options.length - 1]);
+            }
+          });
+          sel.value = name;
+        } else sel.value = sel.dataset.prev || "other";
+      }
+      sel.dataset.prev = sel.value;
+    });
+  }
+
   function viewSpend() {
     const rs = (Data.receipts && Data.receipts()) || [];
-    const cur = rs.find((r) => r.currency) ? rs.find((r) => r.currency).currency : "";
+    const cur = spendCurrency(rs);
+    const members = Data.memberNames();
     let h = `<div class="screen">`;
-    h += `<button class="btn btn--primary" data-act="scan">📸 Scan a bill</button><div style="height:14px"></div>`;
+    h += `<div style="display:flex;gap:10px"><button class="btn btn--primary" data-act="scan">📸 Scan a bill</button><button class="btn btn--ghost" data-act="add-expense">＋ Add expense</button></div><div style="height:14px"></div>`;
     if (!rs.length) {
       h += empty("💸", "No spend logged yet.", null);
-      h += `<div class="card" style="padding:16px"><p class="muted-note">Tap “Scan a bill”, snap your grocery receipt, and it’s read into line items and a total automatically — then logged here.</p></div>`;
+      h += `<div class="card" style="padding:16px"><p class="muted-note">Scan a grocery bill, or tap “Add expense” to log anything — with custom categories (Cigarettes, Household…), who paid, and whether it’s shared.</p></div>`;
       return h + `</div>`;
     }
     h += `<div class="tiles">
       <div class="tile"><div class="big">${money(spendSince(rs, 7), cur)}</div><div class="lbl">This week</div></div>
       <div class="tile"><div class="big">${money(spendSince(rs, 30), cur)}</div><div class="lbl">This month</div></div></div>`;
 
-    // by category (last 30 days)
+    // Balances (couple accounting)
+    if (members.length === 2) {
+      const settlements = (Data.settlements && Data.settlements()) || [];
+      const bal = L.computeBalances(rs, members, settlements);
+      const paid = {}; members.forEach((mn) => (paid[mn] = 0));
+      rs.forEach((r) => { if (r.paidBy && paid[r.paidBy] !== undefined) paid[r.paidBy] += Number(r.total) || 0; });
+      h += sectionTitle("💑 Balances");
+      h += `<div class="card" style="padding:14px">`;
+      members.forEach((mn) => { h += `<div style="display:flex;justify-content:space-between;font-size:14px;margin-bottom:6px"><span>${esc(mn)} paid</span><strong>${money(paid[mn], cur)}</strong></div>`; });
+      h += `<div class="divider" style="margin:10px 0"></div>`;
+      h += bal.owe
+        ? `<div style="display:flex;justify-content:space-between;align-items:center;gap:10px"><span style="font-weight:700">${esc(bal.owe.from)} owes ${esc(bal.owe.to)} <span style="color:var(--green)">${money(bal.owe.amount, cur)}</span></span><button class="btn btn--primary btn--sm" data-act="settle">Settle up</button></div>`
+        : `<div class="muted-note" style="font-weight:600">All settled up 👍</div>`;
+      h += `</div>`;
+    }
+
+    // Budgets
+    const budgets = (Data.budgets && Data.budgets()) || [];
+    h += sectionTitle("Budgets · this month");
+    if (!budgets.length) {
+      h += `<div class="card" style="padding:14px"><p class="muted-note" style="margin:0 0 10px">No budgets yet. Cap your monthly spend (overall or per category).</p><button class="btn btn--ghost btn--sm" data-act="set-budgets">Set budgets</button></div>`;
+    } else {
+      const prog = L.budgetProgress(rs, budgets, L.currentYM()).sort((a, b) => a.category === "TOTAL" ? -1 : b.category === "TOTAL" ? 1 : b.spent - a.spent);
+      h += `<div class="card" style="padding:14px">`;
+      prog.forEach((p) => {
+        const over = p.pct > 100, lbl = p.category === "TOTAL" ? "🧮 Total" : catLabel(p.category), w = Math.min(100, p.pct);
+        h += `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;margin-bottom:4px"><span>${lbl}</span><span style="${over ? "color:var(--red)" : ""}">${money(p.spent, cur)} / ${money(p.budget, cur)}</span></div>
+          <div style="height:8px;background:var(--bg);border-radius:999px;overflow:hidden"><div style="height:100%;width:${w}%;background:${over ? "var(--red)" : "var(--green)"};border-radius:999px"></div></div></div>`;
+      });
+      h += `<button class="btn btn--ghost btn--sm" data-act="set-budgets">Edit budgets</button></div>`;
+    }
+
+    // By category (30 days)
     const byCat = spendByCategory(rs, 30);
     const cats = Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]);
     if (cats.length) {
@@ -187,20 +256,21 @@
       h += sectionTitle("By category · 30 days");
       h += `<div class="card" style="padding:14px">`;
       cats.forEach((c) => {
-        const label = CATEGORIES[c] ? `${CATEGORIES[c].emoji} ${CATEGORIES[c].label}` : "🧾 Other";
         const pct = max ? Math.round((byCat[c] / max) * 100) : 0;
-        h += `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;margin-bottom:4px"><span>${label}</span><span>${money(byCat[c], cur)}</span></div>
+        h += `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;margin-bottom:4px"><span>${catLabel(c)}</span><span>${money(byCat[c], cur)}</span></div>
           <div style="height:8px;background:var(--bg);border-radius:999px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--green);border-radius:999px"></div></div></div>`;
       });
       h += `</div>`;
     }
 
-    h += sectionTitle("Receipts", rs.length);
+    // History (tap to edit)
+    h += sectionTitle("History", rs.length);
     h += `<div class="card">`;
     rs.forEach((r) => {
-      h += `<div class="item"><div class="item-emoji">🧾</div>
-        <div class="item-body"><div class="item-name">${esc(r.store || "Receipt")}</div>
-        <div class="item-sub">${esc(r.date || "")} · ${(r.items || []).length} items · added by ${esc(r.createdBy || "")}</div></div>
+      const tag = r.split === "personal" ? " · personal" : "";
+      h += `<div class="item" data-act="edit-receipt" data-id="${r.id}"><div class="item-emoji">🧾</div>
+        <div class="item-body"><div class="item-name">${esc(r.store || "Expense")}</div>
+        <div class="item-sub">${esc(r.date || "")}${r.paidBy ? " · " + esc(r.paidBy) : ""}${tag}</div></div>
         <div style="font-weight:700">${money(r.total, r.currency || cur)}</div></div>`;
     });
     h += `</div>`;
@@ -244,66 +314,154 @@
     } catch (e) { console.error(e); toast("Couldn't read that bill — try again"); }
   }
 
-  function openReceiptReview(data) {
-    const items = (data.items || []).map((it) => Object.assign({ add: it.category !== "other" }, it));
+  function bindWho(m, prefix) {
+    const box = m.querySelector(`#${prefix}-who`);
+    if (box) box.addEventListener("click", (e) => { const b = e.target.closest("[data-who]"); if (!b) return; m.querySelectorAll(`#${prefix}-who .chip`).forEach((x) => x.classList.toggle("on", x === b)); });
+  }
+
+  // Review a scanned bill (editId omitted) OR edit an existing expense (editId set).
+  function openReceiptReview(data, editId) {
+    const editing = !!editId;
+    const items = (data.items || []).map((it) => Object.assign({ add: !editing && it.category !== "other" && !!CATEGORIES[it.category] }, it));
+    const members = Data.memberNames(); const me = Data.myName();
+    const sharedChecked = data.split !== "personal";
     const m = document.createElement("div");
     m.className = "modal-backdrop";
-    const catOpts = (sel) => ["vegetables", "fruits", "meat", "packaged", "dry", "other"].map((c) =>
-      `<option value="${c}" ${c === sel ? "selected" : ""}>${CATEGORIES[c] ? CATEGORIES[c].label : "Other"}</option>`).join("");
     m.innerHTML = `<div class="modal" role="dialog">
-      <h2>Review bill</h2>
+      <h2>${editing ? "Edit expense" : "Review bill"}</h2>
       <div class="row2">
-        <div class="field"><label>Store</label><input type="text" id="r-store" value="${esc(data.store || "")}" /></div>
+        <div class="field"><label>Store / label</label><input type="text" id="r-store" value="${esc(data.store || "")}" /></div>
         <div class="field"><label>Date</label><input type="date" id="r-date" value="${esc(data.date || todayISO())}" /></div>
       </div>
       <div class="row2">
         <div class="field"><label>Total</label><input type="number" id="r-total" step="0.01" value="${data.total != null ? data.total : ""}" /></div>
         <div class="field"><label>Currency</label><input type="text" id="r-cur" value="${esc(data.currency || "")}" placeholder="₹, $, €…" /></div>
       </div>
-      <div class="section-title">Items <span class="count">· tick to add to inventory</span></div>
+      ${members.length >= 2 ? `<div class="field"><label>Paid by</label><div class="chips" id="r-who">${members.map((n) => `<button type="button" class="chip ${n === (data.paidBy || me) ? "on" : ""}" data-who="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>
+        <div class="toggle-row" style="margin-bottom:16px"><span class="t-lbl">Shared 50/50</span><label class="switch"><input type="checkbox" id="r-shared" ${sharedChecked ? "checked" : ""}/><span class="slider"></span></label></div>` : ""}
+      <div class="section-title">Items${editing ? "" : ' <span class="count">· tick to add to inventory</span>'}</div>
       <div class="card" id="r-items">
         ${items.map((it, i) => `<div class="item" data-i="${i}">
-          <div class="check ${it.add ? "on" : ""}" data-act="rtoggle" data-i="${i}"></div>
+          ${editing ? "" : `<div class="check ${it.add ? "on" : ""}" data-act="rtoggle" data-i="${i}"></div>`}
           <div class="item-body" style="display:grid;gap:6px">
             <input type="text" class="ri-name" data-i="${i}" value="${esc(it.name)}" style="font-weight:600" />
             <div style="display:flex;gap:6px">
               <input type="number" class="ri-qty" data-i="${i}" value="${it.qty}" step="0.5" style="width:64px" aria-label="qty" />
               <input type="number" class="ri-price" data-i="${i}" value="${it.price}" step="0.01" style="width:84px" aria-label="price" />
-              <select class="ri-cat" data-i="${i}" style="flex:1">${catOpts(it.category)}</select>
+              <select class="ri-cat" data-i="${i}" style="flex:1">${catOptions(it.category)}</select>
             </div>
           </div>
           <button class="icon-btn" data-act="rdel" data-i="${i}" aria-label="Remove">🗑</button>
         </div>`).join("")}
       </div>
       <div style="height:14px"></div>
-      <button class="btn btn--primary" data-act="rconfirm">Save spend</button>
+      <button class="btn btn--primary" data-act="rconfirm">${editing ? "Save changes" : "Save spend"}</button>
+      ${editing ? `<div style="height:8px"></div><button class="btn btn--ghost btn--sm" data-act="rdelete" style="color:var(--red)">Delete expense</button>` : ""}
       <div style="height:8px"></div>
       <button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
     </div>`;
     document.body.appendChild(m);
-    m._items = items;
+    wireCatSelect(m); bindWho(m, "r");
     m.addEventListener("click", (e) => {
       if (e.target === m) return closeModal();
       const t = e.target.closest("[data-act]"); if (!t) return;
       const i = t.dataset.i != null ? parseInt(t.dataset.i, 10) : null;
-      if (t.dataset.act === "rtoggle") { items[i].add = !items[i].add; t.classList.toggle("on", items[i].add); }
-      else if (t.dataset.act === "rdel") { items[i]._removed = true; t.closest(".item").style.display = "none"; }
-      else if (t.dataset.act === "rconfirm") confirmReceipt(m, items);
-      else if (t.dataset.act === "close") closeModal();
+      const act = t.dataset.act;
+      if (act === "rtoggle") { items[i].add = !items[i].add; t.classList.toggle("on", items[i].add); }
+      else if (act === "rdel") { items[i]._removed = true; t.closest(".item").style.display = "none"; }
+      else if (act === "rconfirm") confirmReceipt(m, items, editId);
+      else if (act === "rdelete") { if (confirm("Delete this expense?")) { Data.removeReceipt(editId); closeModal(); toast("Deleted"); setScreen("spend"); } }
+      else if (act === "close") closeModal();
     });
   }
-  function confirmReceipt(m, items) {
-    const v = (id) => document.getElementById(id);
+  function confirmReceipt(m, items, editId) {
+    const v = (id) => m.querySelector("#" + id);
     const read = (sel, i, num) => { const el = m.querySelector(`.${sel}[data-i="${i}"]`); return el ? (num ? parseFloat(el.value) || 0 : el.value) : null; };
     const date = v("r-date").value || todayISO();
     const cur = v("r-cur").value.trim();
-    const finalItems = items.map((it, i) => it._removed ? null : { name: read("ri-name", i), qty: read("ri-qty", i, true) || 1, price: read("ri-price", i, true), category: read("ri-cat", i), add: it.add }).filter(Boolean);
-    Data.addReceipt({ store: v("r-store").value.trim(), date, currency: cur, total: parseFloat(v("r-total").value) || finalItems.reduce((s, it) => s + it.price, 0), items: finalItems.map(({ add, ...rest }) => rest) });
-    finalItems.filter((it) => it.add && it.name).forEach((it) => {
-      const cat = CATEGORIES[it.category] ? it.category : "packaged";
-      Data.add({ id: null, name: it.name, category: cat, qty: it.qty, unit: CATEGORIES[cat].unit, status: "in_stock", addedBy: Data.myName(), purchasedDate: date, expiryDate: null, freshnessDays: CATEGORIES[cat].freshness, notes: "" });
-    });
-    closeModal(); toast("Spend saved"); setScreen("spend");
+    const finalItems = items.map((it, i) => it._removed ? null : { name: read("ri-name", i), qty: read("ri-qty", i, true) || 1, price: read("ri-price", i, true), category: read("ri-cat", i) === "__new__" ? "other" : read("ri-cat", i), add: it.add }).filter(Boolean);
+    const whoBtn = m.querySelector("#r-who .chip.on");
+    const shared = v("r-shared") ? v("r-shared").checked : true;
+    const total = parseFloat(v("r-total").value) || finalItems.reduce((s, it) => s + it.price, 0);
+    const receipt = { store: v("r-store").value.trim(), date, currency: cur, total, paidBy: whoBtn ? whoBtn.dataset.who : Data.myName(), split: shared ? "shared" : "personal", items: finalItems.map(({ add, ...rest }) => rest) };
+    if (editId) { receipt.id = editId; Data.updateReceipt(receipt); }
+    else {
+      Data.addReceipt(receipt);
+      finalItems.filter((it) => it.add && it.name && CATEGORIES[it.category]).forEach((it) => {
+        const cat = it.category;
+        Data.add({ id: null, name: it.name, category: cat, qty: it.qty, unit: CATEGORIES[cat].unit, status: "in_stock", addedBy: Data.myName(), purchasedDate: date, expiryDate: null, freshnessDays: CATEGORIES[cat].freshness, notes: "" });
+      });
+    }
+    closeModal(); toast(editId ? "Saved" : "Spend saved"); setScreen("spend");
+  }
+
+  // ----- Manual expense (quick single entry) -----
+  function openExpense() {
+    const members = Data.memberNames(); const me = Data.myName();
+    const cur = spendCurrency(Data.receipts() || []);
+    const m = document.createElement("div");
+    m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>Add expense</h2>
+      <div class="field"><label>What for?</label><input type="text" id="e-label" placeholder="e.g. Cigarettes, Dinner out" autocomplete="off" /></div>
+      <div class="row2">
+        <div class="field"><label>Amount</label><input type="number" id="e-amt" step="0.01" inputmode="decimal" /></div>
+        <div class="field"><label>Currency</label><input type="text" id="e-cur" value="${esc(cur)}" placeholder="₹, $…" /></div>
+      </div>
+      <div class="row2">
+        <div class="field"><label>Date</label><input type="date" id="e-date" value="${todayISO()}" /></div>
+        <div class="field"><label>Category</label><select id="e-cat" class="ri-cat">${catOptions("other")}</select></div>
+      </div>
+      ${members.length >= 2 ? `<div class="field"><label>Paid by</label><div class="chips" id="e-who">${members.map((n) => `<button type="button" class="chip ${n === me ? "on" : ""}" data-who="${esc(n)}">${esc(n)}</button>`).join("")}</div></div>
+        <div class="toggle-row" style="margin-bottom:16px"><span class="t-lbl">Shared 50/50</span><label class="switch"><input type="checkbox" id="e-shared" checked/><span class="slider"></span></label></div>` : ""}
+      <button class="btn btn--primary" data-act="save-expense">Save expense</button>
+      <div style="height:8px"></div>
+      <button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
+    </div>`;
+    document.body.appendChild(m);
+    wireCatSelect(m); bindWho(m, "e");
+    m.querySelector("#e-label").focus && setTimeout(() => m.querySelector("#e-label").focus(), 60);
+    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "save-expense") saveExpense(m); else if (t.dataset.act === "close") closeModal(); });
+  }
+  function saveExpense(m) {
+    const v = (id) => m.querySelector("#" + id);
+    const label = v("e-label").value.trim();
+    const amt = parseFloat(v("e-amt").value) || 0;
+    if (amt <= 0) return toast("Enter an amount");
+    let cat = v("e-cat").value; if (cat === "__new__") cat = "other";
+    const date = v("e-date").value || todayISO();
+    const whoBtn = m.querySelector("#e-who .chip.on");
+    const shared = v("e-shared") ? v("e-shared").checked : true;
+    const name = label || plainCatLabel(cat);
+    Data.addReceipt({ store: name, date, currency: v("e-cur").value.trim(), total: amt, paidBy: whoBtn ? whoBtn.dataset.who : Data.myName(), split: shared ? "shared" : "personal", items: [{ name, qty: 1, price: amt, category: cat }] });
+    closeModal(); toast("Expense saved"); setScreen("spend");
+  }
+
+  // ----- Budgets -----
+  function openBudgets() {
+    const budgets = Data.budgets() || []; const getB = (c) => { const b = budgets.find((x) => x.category === c); return b ? b.monthly : ""; };
+    const cur = spendCurrency(Data.receipts() || []);
+    const cats = ["TOTAL"].concat(allSpendCats());
+    const m = document.createElement("div");
+    m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>Monthly budgets${cur ? ` (${esc(cur)})` : ""}</h2>
+      <p class="muted-note">Blank or 0 = no budget. “Total” caps overall monthly spend.</p>
+      ${cats.map((c) => `<div class="field" style="display:flex;align-items:center;gap:10px;margin-bottom:10px"><label style="flex:1;margin:0">${c === "TOTAL" ? "🧮 Total" : catLabel(c)}</label><input type="number" class="bd-input" data-cat="${esc(c)}" step="1" inputmode="decimal" style="width:120px" value="${getB(c)}" /></div>`).join("")}
+      <div style="height:8px"></div>
+      <button class="btn btn--primary" data-act="save-budgets">Save</button>
+      <div style="height:8px"></div>
+      <button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "save-budgets") { m.querySelectorAll(".bd-input").forEach((inp) => Data.setBudget(inp.dataset.cat, parseFloat(inp.value) || 0)); closeModal(); toast("Budgets saved"); setScreen("spend"); } else if (t.dataset.act === "close") closeModal(); });
+  }
+
+  function doSettle() {
+    const rs = Data.receipts() || []; const members = Data.memberNames(); const settlements = Data.settlements() || [];
+    const bal = L.computeBalances(rs, members, settlements);
+    if (!bal.owe) return toast("Nothing to settle");
+    if (confirm(`Record that ${bal.owe.from} paid ${bal.owe.to} ${bal.owe.amount}?`)) { Data.addSettlement(bal.owe.from, bal.owe.to, bal.owe.amount); toast("Settled up 👍"); setScreen("spend"); }
   }
 
   // ----- bits -----
@@ -660,6 +818,10 @@
       case "bin": { const prev = Object.assign({}, getItem(id)); markUsed(id, true); render(); toast("Binned", { label: "Undo", fn: () => { Data.update(prev); render(); } }); break; }
       case "sample": loadSample(); break;
       case "scan": startScan(); break;
+      case "add-expense": openExpense(); break;
+      case "set-budgets": openBudgets(); break;
+      case "settle": doSettle(); break;
+      case "edit-receipt": { const r = (Data.receipts() || []).find((x) => x.id === id); if (r) openReceiptReview(r, r.id); break; }
       case "save-settings": saveSettings(); break;
       case "create-hh": doCreate(); break;
       case "join-hh": doJoin(); break;
