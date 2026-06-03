@@ -1,11 +1,13 @@
 // Minimal offline cache for the app shell. The app's data lives in
 // localStorage, so once the shell is cached the app works fully offline.
-const CACHE = "pantry-v1";
+const CACHE = "pantry-v2";
 const SHELL = [
   "./",
   "./index.html",
   "./src/styles.css",
   "./src/app.js",
+  "./src/sync.js",
+  "./src/config.js",
   "./manifest.webmanifest",
   "./public/app-icon.svg",
 ];
