@@ -25,7 +25,9 @@ module.exports = async (req, res) => {
   const VPUB = process.env.VAPID_PUBLIC_KEY;
   const VPRIV = process.env.VAPID_PRIVATE_KEY;
   const VSUB = process.env.VAPID_SUBJECT || "mailto:pantry@example.com";
-  if (!SB || !SRK || !VPUB || !VPRIV) return res.status(500).json({ error: "Missing env (SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY)" });
+  const required = { SUPABASE_URL: SB, SUPABASE_SERVICE_ROLE_KEY: SRK, VAPID_PUBLIC_KEY: VPUB, VAPID_PRIVATE_KEY: VPRIV };
+  const missing = Object.keys(required).filter((k) => !required[k]);
+  if (missing.length) return res.status(500).json({ error: "Missing env vars", missing, cron_secret_set: !!secret });
 
   webpush.setVapidDetails(VSUB, VPUB, VPRIV);
   const get = (path) => fetch(`${SB}/rest/v1/${path}`, { headers: { apikey: SRK, Authorization: `Bearer ${SRK}` } }).then((r) => r.json());
