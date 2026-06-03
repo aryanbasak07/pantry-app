@@ -37,7 +37,7 @@ module.exports = async (req, res) => {
       generationConfig: { temperature: 0, responseMimeType: "application/json" },
     };
 
-    const model = "gemini-2.0-flash";
+    const model = body.model || process.env.GEMINI_MODEL || "gemini-2.5-flash";
     const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
     const r = await fetch(url, {
       method: "POST",
