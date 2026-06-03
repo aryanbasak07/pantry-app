@@ -25,6 +25,13 @@ window.Data = (() => {
   let needsPairing = false;
   const listeners = [];
 
+  // sync/connection state (Phase 5)
+  let online = (typeof navigator !== "undefined" && "onLine" in navigator) ? navigator.onLine : true;
+  let syncing = false;
+  let channelJoined = false;
+  let reconnectTimer = null, reconnectBackoff = 1000;
+  let flushTimer = null, flushBackoff = 2000;
+
   const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (_) { return d; } };
   const lsSet = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (_) {} };
   const emit = () => listeners.forEach((f) => { try { f(); } catch (_) {} });
@@ -114,37 +121,78 @@ window.Data = (() => {
     emit();
   }
 
-  // ---------- Realtime ----------
-  let channel = null;
-  function subscribe() {
-    if (channel) sb.removeChannel(channel);
-    channel = sb
-      .channel("items-" + household.id)
-      .on("postgres_changes",
-        { event: "*", schema: "public", table: "items", filter: "household_id=eq." + household.id },
-        (payload) => {
-          if (payload.eventType === "DELETE") {
-            items = items.filter((i) => i.id !== payload.old.id);
-          } else {
-            const row = fromRow(payload.new);
-            const idx = items.findIndex((i) => i.id === row.id);
-            if (idx >= 0) items[idx] = row; else items.push(row);
-          }
-          lsSet(cacheKey(household.id), items);
-          emit();
-        })
-      .subscribe();
+  // ---------- Sync status ----------
+  function pendingCount() { return household ? lsGet(outboxKey(household.id), []).length : 0; }
+  function setSyncing(b) { if (syncing !== b) { syncing = b; emit(); } }
+  function syncStatus() {
+    if (mode !== "cloud") return { state: "local", pending: 0 };
+    if (!online) return { state: "offline", pending: pendingCount() };
+    if (syncing || pendingCount() > 0 || !channelJoined) return { state: "syncing", pending: pendingCount() };
+    return { state: "synced", pending: 0 };
   }
 
-  // ---------- Outbox (offline writes) ----------
-  function queue(op) {
-    const q = lsGet(outboxKey(household.id), []);
-    q.push(op); lsSet(outboxKey(household.id), q);
+  // ---------- Realtime (resilient: status-aware + auto-reconnect) ----------
+  let channel = null, receiptChannel = null;
+  function teardownChannels() {
+    try { if (channel) sb.removeChannel(channel); if (receiptChannel) sb.removeChannel(receiptChannel); } catch (_) {}
+    channel = null; receiptChannel = null; channelJoined = false;
+  }
+  function handleItemChange(payload) {
+    if (payload.eventType === "DELETE") items = items.filter((i) => i.id !== payload.old.id);
+    else { const row = fromRow(payload.new); const idx = items.findIndex((i) => i.id === row.id); if (idx >= 0) items[idx] = row; else items.push(row); }
+    lsSet(cacheKey(household.id), items); emit();
+  }
+  function handleReceiptChange(payload) {
+    if (payload.eventType === "DELETE") receipts = receipts.filter((r) => r.id !== payload.old.id);
+    else { const row = fromReceiptRow(payload.new); const idx = receipts.findIndex((r) => r.id === row.id); if (idx >= 0) receipts[idx] = row; else receipts.unshift(row); }
+    lsSet("pantry.receipts.cloud." + household.id, receipts); emit();
+  }
+  function subscribe() {
+    teardownChannels();
+    channel = sb.channel("items-" + household.id)
+      .on("postgres_changes", { event: "*", schema: "public", table: "items", filter: "household_id=eq." + household.id }, handleItemChange)
+      .subscribe((status) => {
+        if (status === "SUBSCRIBED") { channelJoined = true; reconnectBackoff = 1000; resync(); emit(); }
+        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") { channelJoined = false; scheduleReconnect(); emit(); }
+      });
+    receiptChannel = sb.channel("receipts-" + household.id)
+      .on("postgres_changes", { event: "*", schema: "public", table: "receipts", filter: "household_id=eq." + household.id }, handleReceiptChange)
+      .subscribe();
+  }
+  function scheduleReconnect() {
+    if (reconnectTimer || mode !== "cloud" || !household) return;
+    reconnectTimer = setTimeout(() => { reconnectTimer = null; if (mode === "cloud" && household) subscribe(); }, reconnectBackoff);
+    reconnectBackoff = Math.min(reconnectBackoff * 2, 30000);
+  }
+  async function resync() {
+    if (mode !== "cloud" || !household) return;
+    setSyncing(true);
+    try { await pullItems(); await pullReceipts(); } finally { setSyncing(false); }
+  }
+  function onResume() {
+    online = (typeof navigator !== "undefined" && "onLine" in navigator) ? navigator.onLine : true;
+    if (mode === "cloud" && household) { if (!channelJoined) subscribe(); else resync(); flushOutbox(); }
+    emit();
+  }
+  if (typeof window !== "undefined") {
+    window.addEventListener("online", () => { online = true; onResume(); });
+    window.addEventListener("offline", () => { online = false; emit(); });
+    window.addEventListener("focus", onResume);
+    if (typeof document !== "undefined") document.addEventListener("visibilitychange", () => { if (!document.hidden) onResume(); });
+  }
+
+  // ---------- Outbox (offline writes, retry with backoff) ----------
+  function queue(op) { const q = lsGet(outboxKey(household.id), []); q.push(op); lsSet(outboxKey(household.id), q); emit(); }
+  function scheduleFlush() {
+    if (flushTimer) return;
+    flushTimer = setTimeout(async () => { flushTimer = null; await flushOutbox(); }, flushBackoff);
+    flushBackoff = Math.min(flushBackoff * 2, 60000);
   }
   async function flushOutbox() {
     if (mode !== "cloud" || !household) return;
     let q = lsGet(outboxKey(household.id), []);
-    if (!q.length) return;
+    if (!q.length) { flushBackoff = 2000; return; }
+    setSyncing(true);
     const remain = [];
     for (const op of q) {
       try {
@@ -154,8 +202,9 @@ window.Data = (() => {
       } catch (_) { remain.push(op); }
     }
     lsSet(outboxKey(household.id), remain);
+    setSyncing(false);
+    if (remain.length) scheduleFlush(); else flushBackoff = 2000;
   }
-  if (typeof window !== "undefined") window.addEventListener("online", flushOutbox);
 
   // ---------- Pairing ----------
   async function createHousehold(name, myName) {
@@ -173,6 +222,15 @@ window.Data = (() => {
     needsPairing = false;
     await refreshMembers(); await pullItems(); subscribe();
     return household;
+  }
+  async function rotateInviteCode() {
+    if (mode !== "cloud" || !household) return null;
+    const { data, error } = await sb.rpc("rotate_invite_code", { p_household: household.id });
+    if (error) throw error;
+    const row = Array.isArray(data) ? data[0] : data;
+    if (row && row.invite_code) household.invite_code = row.invite_code;
+    emit();
+    return household.invite_code;
   }
 
   // ---------- Mutations (mode-aware, optimistic) ----------
@@ -202,6 +260,7 @@ window.Data = (() => {
       flushOutbox();
     } catch (_) {
       queue(t === "upsert" ? { t: "upsert", row: toRow(item) } : { t: "delete", id });
+      scheduleFlush();
     }
   }
 
@@ -291,7 +350,9 @@ window.Data = (() => {
   return {
     init, onChange: (f) => listeners.push(f),
     mode: () => mode, needsPairing: () => needsPairing,
+    syncStatus, resync,
     inviteCode: () => household && household.invite_code,
+    rotateInviteCode,
     householdName: () => household && household.name,
     items: () => items, catFresh: CAT_FRESH,
     receipts: () => receipts, pullReceipts, addReceipt,

@@ -14,32 +14,9 @@
   };
   const CAT_ORDER = ["vegetables", "fruits", "meat", "packaged", "dry"];
 
-  // ---------- Date helpers ----------
-  const DAY = 86400000;
-  function startOfToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
-  function parseISO(s) { return new Date(s + "T00:00:00"); }
-  function toISO(d) { const p = (n) => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`; }
-  function addDays(d, n) { const x = new Date(d); x.setDate(x.getDate() + n); return x; }
-  function diffDays(from, to) { return Math.round((to - from) / DAY); }
-  const todayISO = () => toISO(startOfToday());
-
-  // ---------- Freshness logic ----------
-  function freshness(item) {
-    const t = startOfToday();
-    const c = [];
-    if (item.expiryDate) c.push({ d: diffDays(t, parseISO(item.expiryDate)), kind: "expiry" });
-    if (item.purchasedDate) c.push({ d: diffDays(t, addDays(parseISO(item.purchasedDate), item.freshnessDays || 7)), kind: "fresh" });
-    if (!c.length) return { daysLeft: null, bucket: "none", reason: "" };
-    c.sort((a, b) => a.d - b.d);
-    const { d, kind } = c[0];
-    const bucket = d <= 2 ? "attention" : d <= 5 ? "soon" : "fresh";
-    return { daysLeft: d, bucket, reason: reasonText(kind, d) };
-  }
-  function reasonText(kind, d) {
-    if (kind === "expiry") return d < 0 ? "Expired" : d === 0 ? "Expires today" : d === 1 ? "Expires tomorrow" : `Expires in ${d}d`;
-    return d < 0 ? "Overdue — use now" : d === 0 ? "Use today" : d === 1 ? "Use by tomorrow" : `Use within ${d}d`;
-  }
-  const pillClass = (b) => b === "attention" ? "pill--red" : b === "soon" ? "pill--amber" : "pill--green";
+  // ---------- Shared logic (pure functions live in src/logic.js / window.PantryLogic) ----------
+  const L = window.PantryLogic;
+  const { startOfToday, parseISO, toISO, addDays, diffDays, todayISO, freshness, reasonText, pillClass, spendSince, spendByCategory, validateItem } = L;
 
   // ---------- Selectors (data comes from Data) ----------
   const all = () => Data.items();
@@ -79,6 +56,19 @@
     const setBadge = (id, n) => { const el = document.getElementById(id); if (!el) return; el.hidden = n <= 0; el.textContent = n; };
     setBadge("badge-list", toBuy().length);
     setBadge("badge-stock", attentionItems().length);
+    updateSyncStatus();
+  }
+  function updateSyncStatus() {
+    const el = document.getElementById("sync-status"); if (!el || !Data.syncStatus) return;
+    const s = Data.syncStatus();
+    if (s.state === "local") { el.hidden = true; return; }
+    const map = {
+      synced: ["sync--ok", "Synced"],
+      syncing: ["sync--busy", s.pending > 0 ? `Syncing ${s.pending}…` : "Syncing…"],
+      offline: ["sync--off", s.pending > 0 ? `Offline · ${s.pending}` : "Offline"],
+    };
+    const [cls, label] = map[s.state] || ["sync--ok", "Synced"];
+    el.hidden = false; el.className = "sync-status " + cls; el.textContent = label;
   }
 
   function esc(s) { return String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c])); }
@@ -175,10 +165,6 @@
     const s = Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
     return cur ? `${cur} ${s}` : s;
   }
-  function spendSince(rs, days) {
-    const cut = addDays(startOfToday(), -days + 1);
-    return rs.filter((r) => r.date && parseISO(r.date) >= cut).reduce((s, r) => s + (Number(r.total) || 0), 0);
-  }
   function viewSpend() {
     const rs = (Data.receipts && Data.receipts()) || [];
     const cur = rs.find((r) => r.currency) ? rs.find((r) => r.currency).currency : "";
@@ -194,12 +180,7 @@
       <div class="tile"><div class="big">${money(spendSince(rs, 30), cur)}</div><div class="lbl">This month</div></div></div>`;
 
     // by category (last 30 days)
-    const cut = addDays(startOfToday(), -29);
-    const byCat = {};
-    rs.filter((r) => r.date && parseISO(r.date) >= cut).forEach((r) => (r.items || []).forEach((it) => {
-      const c = CATEGORIES[it.category] ? it.category : "other";
-      byCat[c] = (byCat[c] || 0) + (Number(it.price) || 0);
-    }));
+    const byCat = spendByCategory(rs, 30);
     const cats = Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]);
     if (cats.length) {
       const max = Math.max.apply(null, cats.map((c) => byCat[c]));
@@ -438,7 +419,9 @@
       freshnessDays: parseInt(v("f-fresh").value, 10) || CATEGORIES[formCat].freshness,
       notes: v("f-notes").value.trim(),
     };
-    if (editing) Data.update(item); else Data.add(item);
+    const check = validateItem(item);
+    if (!check.ok) { toast(check.errors[0]); return; }
+    if (editing) Data.update(check.cleaned); else Data.add(check.cleaned);
     closeModal();
     toast(editing ? "Saved" : instock ? "Added to stock" : "Added to list");
     render();
@@ -456,7 +439,8 @@
       <h2>Settings</h2>
       ${cloud
         ? `<div class="banner">✅ Shared kitchen${code ? ` · code <strong>${esc(code)}</strong>` : ""}</div>
-           ${code ? `<p class="muted-note">Share this code with your partner so they can join from their phone.</p><div style="height:10px"></div>` : ""}
+           ${code ? `<p class="muted-note">Share this code with your partner so they can join from their phone.</p>
+             <button class="btn btn--ghost btn--sm" data-act="rotate-code">Generate new code</button><div style="height:12px"></div>` : ""}
            <div class="field"><label>Your name</label><input type="text" id="s-me" value="${esc(Data.myName())}" /></div>
            <button class="btn btn--primary" data-act="save-settings">Save</button>
            <div class="toggle-row" style="margin-top:16px">
@@ -577,9 +561,20 @@
     closeModal(); toast("Sample items loaded"); setScreen("home");
   }
 
-  // ---------- Toast ----------
+  // ---------- Toast (optional action, e.g. Undo) ----------
   let toastTimer;
-  function toast(msg) { const el = document.getElementById("toast"); el.textContent = msg; el.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { el.hidden = true; }, 1800); }
+  function toast(msg, action) {
+    const el = document.getElementById("toast");
+    el.innerHTML = ""; el.appendChild(document.createTextNode(msg));
+    if (action) {
+      const b = document.createElement("button");
+      b.className = "toast-action"; b.textContent = action.label;
+      b.addEventListener("click", () => { el.hidden = true; clearTimeout(toastTimer); action.fn(); });
+      el.appendChild(b);
+    }
+    el.hidden = false; clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { el.hidden = true; }, action ? 5000 : 1800);
+  }
 
   // ---------- Install prompt (Add to Home Screen) ----------
   let deferredInstall = null;
@@ -658,16 +653,17 @@
       case "go": setScreen(el.dataset.screen); break;
       case "add": openForm(); break;
       case "edit": openForm(id); break;
-      case "del": Data.remove(id); render(); toast("Removed"); break;
-      case "del-edit": Data.remove(id); closeModal(); render(); toast("Deleted"); break;
+      case "del": { const it = getItem(id); Data.remove(id); render(); toast("Removed", { label: "Undo", fn: () => { if (it) { Data.update(it); render(); toast("Restored"); } } }); break; }
+      case "del-edit": { const it = getItem(id); Data.remove(id); closeModal(); render(); toast("Deleted", { label: "Undo", fn: () => { if (it) { Data.update(it); render(); } } }); break; }
       case "buy": el.classList.add("on"); setTimeout(() => { moveToStock(id); render(); toast("Moved to stock"); }, 220); break;
-      case "used": markUsed(id, false); render(); toast("Used up — nice"); break;
-      case "bin": markUsed(id, true); render(); toast("Binned"); break;
+      case "used": { const prev = Object.assign({}, getItem(id)); markUsed(id, false); render(); toast("Used up — nice", { label: "Undo", fn: () => { Data.update(prev); render(); } }); break; }
+      case "bin": { const prev = Object.assign({}, getItem(id)); markUsed(id, true); render(); toast("Binned", { label: "Undo", fn: () => { Data.update(prev); render(); } }); break; }
       case "sample": loadSample(); break;
       case "scan": startScan(); break;
       case "save-settings": saveSettings(); break;
       case "create-hh": doCreate(); break;
       case "join-hh": doJoin(); break;
+      case "rotate-code": if (confirm("Generate a new pairing code? The old one stops working.")) { Data.rotateInviteCode().then((c) => { closeModal(); openSettings(); toast("New code: " + c); }).catch(() => toast("Couldn't rotate code")); } break;
       case "import": Data.importLocalItems().then(() => { render(); toast("Imported"); }); break;
       case "skip-import": Data.skipImport(); render(); break;
       case "install-now": doInstall(); break;

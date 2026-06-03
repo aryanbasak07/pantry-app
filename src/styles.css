@@ -50,6 +50,13 @@ body {
   border: none; background: var(--card); width: 38px; height: 38px;
   border-radius: 50%; font-size: 17px; box-shadow: var(--shadow); cursor: pointer;
 }
+.header-right { display: flex; align-items: center; gap: 10px; }
+.sync-status { font-size: 12px; font-weight: 700; color: var(--muted); display: flex; align-items: center; gap: 5px; }
+.sync-status::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+.sync--ok { color: var(--muted); } .sync--ok::before { background: var(--green); }
+.sync--busy { color: var(--amber); } .sync--busy::before { background: var(--amber); }
+.sync--off { color: var(--muted); } .sync--off::before { background: #b3b3b3; }
+.toast-action { margin-left: 12px; background: none; border: none; color: #7fd6a0; font-weight: 800; font-size: 14px; cursor: pointer; padding: 0; }
 
 /* ---------- Main / screens ---------- */
 .app-main {
