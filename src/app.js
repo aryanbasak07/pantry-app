@@ -62,6 +62,7 @@
     screen = s;
     document.getElementById("screen-title").textContent = TITLES[s] || "Pantry";
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.screen === s));
+    if (s === "spend" && Data.pullReceipts) Data.pullReceipts();
     render();
   }
 
@@ -168,19 +169,160 @@
     </div>`;
   }
 
-  // ----- Spend (Phase 3 preview) -----
+  // ----- Spend -----
+  function money(n, cur) {
+    if (n == null || isNaN(n)) return "—";
+    const s = Number(n).toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+    return cur ? `${cur} ${s}` : s;
+  }
+  function spendSince(rs, days) {
+    const cut = addDays(startOfToday(), -days + 1);
+    return rs.filter((r) => r.date && parseISO(r.date) >= cut).reduce((s, r) => s + (Number(r.total) || 0), 0);
+  }
   function viewSpend() {
-    return `<div class="screen">
-      ${empty("💸", "Spend tracking arrives in Phase 3.", null)}
-      <div class="card" style="padding:16px">
-        <p class="muted-note">Snap a photo of your grocery bill and Gemini reads it into
-        line items and a total — automatically logging what you spent and, if you like,
-        adding what you bought straight into your inventory.</p>
-        <div class="divider"></div>
-        <p class="muted-note">This needs a Gemini API key, so it switches on once we wire
-        Phase 3. Everything else works now.</p>
+    const rs = (Data.receipts && Data.receipts()) || [];
+    const cur = rs.find((r) => r.currency) ? rs.find((r) => r.currency).currency : "";
+    let h = `<div class="screen">`;
+    h += `<button class="btn btn--primary" data-act="scan">📸 Scan a bill</button><div style="height:14px"></div>`;
+    if (!rs.length) {
+      h += empty("💸", "No spend logged yet.", null);
+      h += `<div class="card" style="padding:16px"><p class="muted-note">Tap “Scan a bill”, snap your grocery receipt, and it’s read into line items and a total automatically — then logged here.</p></div>`;
+      return h + `</div>`;
+    }
+    h += `<div class="tiles">
+      <div class="tile"><div class="big">${money(spendSince(rs, 7), cur)}</div><div class="lbl">This week</div></div>
+      <div class="tile"><div class="big">${money(spendSince(rs, 30), cur)}</div><div class="lbl">This month</div></div></div>`;
+
+    // by category (last 30 days)
+    const cut = addDays(startOfToday(), -29);
+    const byCat = {};
+    rs.filter((r) => r.date && parseISO(r.date) >= cut).forEach((r) => (r.items || []).forEach((it) => {
+      const c = CATEGORIES[it.category] ? it.category : "other";
+      byCat[c] = (byCat[c] || 0) + (Number(it.price) || 0);
+    }));
+    const cats = Object.keys(byCat).sort((a, b) => byCat[b] - byCat[a]);
+    if (cats.length) {
+      const max = Math.max.apply(null, cats.map((c) => byCat[c]));
+      h += sectionTitle("By category · 30 days");
+      h += `<div class="card" style="padding:14px">`;
+      cats.forEach((c) => {
+        const label = CATEGORIES[c] ? `${CATEGORIES[c].emoji} ${CATEGORIES[c].label}` : "🧾 Other";
+        const pct = max ? Math.round((byCat[c] / max) * 100) : 0;
+        h += `<div style="margin-bottom:10px"><div style="display:flex;justify-content:space-between;font-size:14px;font-weight:600;margin-bottom:4px"><span>${label}</span><span>${money(byCat[c], cur)}</span></div>
+          <div style="height:8px;background:var(--bg);border-radius:999px;overflow:hidden"><div style="height:100%;width:${pct}%;background:var(--green);border-radius:999px"></div></div></div>`;
+      });
+      h += `</div>`;
+    }
+
+    h += sectionTitle("Receipts", rs.length);
+    h += `<div class="card">`;
+    rs.forEach((r) => {
+      h += `<div class="item"><div class="item-emoji">🧾</div>
+        <div class="item-body"><div class="item-name">${esc(r.store || "Receipt")}</div>
+        <div class="item-sub">${esc(r.date || "")} · ${(r.items || []).length} items · added by ${esc(r.createdBy || "")}</div></div>
+        <div style="font-weight:700">${money(r.total, r.currency || cur)}</div></div>`;
+    });
+    h += `</div>`;
+    return h + `</div>`;
+  }
+
+  // ----- Bill scanning (Gemini OCR via /api/parse-receipt) -----
+  function startScan() {
+    const input = document.createElement("input");
+    input.type = "file"; input.accept = "image/*"; input.setAttribute("capture", "environment");
+    input.style.display = "none";
+    input.addEventListener("change", () => { const f = input.files && input.files[0]; if (f) onReceiptFile(f); input.remove(); });
+    document.body.appendChild(input);
+    input.click();
+  }
+  function downscaleImage(file, maxDim, quality) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      const url = URL.createObjectURL(file);
+      img.onload = () => {
+        let { width, height } = img;
+        const scale = Math.min(1, maxDim / Math.max(width, height));
+        width = Math.round(width * scale); height = Math.round(height * scale);
+        const c = document.createElement("canvas"); c.width = width; c.height = height;
+        c.getContext("2d").drawImage(img, 0, 0, width, height);
+        URL.revokeObjectURL(url);
+        resolve({ base64: c.toDataURL("image/jpeg", quality).split(",")[1], mimeType: "image/jpeg" });
+      };
+      img.onerror = reject; img.src = url;
+    });
+  }
+  async function onReceiptFile(file) {
+    if (location.protocol === "file:") return alert("Scanning works on the hosted app (pantry.aryanbasak.com), not when opening the file directly.");
+    toast("Reading bill…");
+    try {
+      const { base64, mimeType } = await downscaleImage(file, 1280, 0.7);
+      const resp = await fetch("/api/parse-receipt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: base64, mimeType }) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "Scan failed");
+      openReceiptReview(data);
+    } catch (e) { console.error(e); toast("Couldn't read that bill — try again"); }
+  }
+
+  function openReceiptReview(data) {
+    const items = (data.items || []).map((it) => Object.assign({ add: it.category !== "other" }, it));
+    const m = document.createElement("div");
+    m.className = "modal-backdrop";
+    const catOpts = (sel) => ["vegetables", "fruits", "meat", "packaged", "dry", "other"].map((c) =>
+      `<option value="${c}" ${c === sel ? "selected" : ""}>${CATEGORIES[c] ? CATEGORIES[c].label : "Other"}</option>`).join("");
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>Review bill</h2>
+      <div class="row2">
+        <div class="field"><label>Store</label><input type="text" id="r-store" value="${esc(data.store || "")}" /></div>
+        <div class="field"><label>Date</label><input type="date" id="r-date" value="${esc(data.date || todayISO())}" /></div>
       </div>
+      <div class="row2">
+        <div class="field"><label>Total</label><input type="number" id="r-total" step="0.01" value="${data.total != null ? data.total : ""}" /></div>
+        <div class="field"><label>Currency</label><input type="text" id="r-cur" value="${esc(data.currency || "")}" placeholder="₹, $, €…" /></div>
+      </div>
+      <div class="section-title">Items <span class="count">· tick to add to inventory</span></div>
+      <div class="card" id="r-items">
+        ${items.map((it, i) => `<div class="item" data-i="${i}">
+          <div class="check ${it.add ? "on" : ""}" data-act="rtoggle" data-i="${i}"></div>
+          <div class="item-body" style="display:grid;gap:6px">
+            <input type="text" class="ri-name" data-i="${i}" value="${esc(it.name)}" style="font-weight:600" />
+            <div style="display:flex;gap:6px">
+              <input type="number" class="ri-qty" data-i="${i}" value="${it.qty}" step="0.5" style="width:64px" aria-label="qty" />
+              <input type="number" class="ri-price" data-i="${i}" value="${it.price}" step="0.01" style="width:84px" aria-label="price" />
+              <select class="ri-cat" data-i="${i}" style="flex:1">${catOpts(it.category)}</select>
+            </div>
+          </div>
+          <button class="icon-btn" data-act="rdel" data-i="${i}" aria-label="Remove">🗑</button>
+        </div>`).join("")}
+      </div>
+      <div style="height:14px"></div>
+      <button class="btn btn--primary" data-act="rconfirm">Save spend</button>
+      <div style="height:8px"></div>
+      <button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
     </div>`;
+    document.body.appendChild(m);
+    m._items = items;
+    m.addEventListener("click", (e) => {
+      if (e.target === m) return closeModal();
+      const t = e.target.closest("[data-act]"); if (!t) return;
+      const i = t.dataset.i != null ? parseInt(t.dataset.i, 10) : null;
+      if (t.dataset.act === "rtoggle") { items[i].add = !items[i].add; t.classList.toggle("on", items[i].add); }
+      else if (t.dataset.act === "rdel") { items[i]._removed = true; t.closest(".item").style.display = "none"; }
+      else if (t.dataset.act === "rconfirm") confirmReceipt(m, items);
+      else if (t.dataset.act === "close") closeModal();
+    });
+  }
+  function confirmReceipt(m, items) {
+    const v = (id) => document.getElementById(id);
+    const read = (sel, i, num) => { const el = m.querySelector(`.${sel}[data-i="${i}"]`); return el ? (num ? parseFloat(el.value) || 0 : el.value) : null; };
+    const date = v("r-date").value || todayISO();
+    const cur = v("r-cur").value.trim();
+    const finalItems = items.map((it, i) => it._removed ? null : { name: read("ri-name", i), qty: read("ri-qty", i, true) || 1, price: read("ri-price", i, true), category: read("ri-cat", i), add: it.add }).filter(Boolean);
+    Data.addReceipt({ store: v("r-store").value.trim(), date, currency: cur, total: parseFloat(v("r-total").value) || finalItems.reduce((s, it) => s + it.price, 0), items: finalItems.map(({ add, ...rest }) => rest) });
+    finalItems.filter((it) => it.add && it.name).forEach((it) => {
+      const cat = CATEGORIES[it.category] ? it.category : "packaged";
+      Data.add({ id: null, name: it.name, category: cat, qty: it.qty, unit: CATEGORIES[cat].unit, status: "in_stock", addedBy: Data.myName(), purchasedDate: date, expiryDate: null, freshnessDays: CATEGORIES[cat].freshness, notes: "" });
+    });
+    closeModal(); toast("Spend saved"); setScreen("spend");
   }
 
   // ----- bits -----
@@ -374,6 +516,7 @@
       case "used": markUsed(id, false); render(); toast("Used up — nice"); break;
       case "bin": markUsed(id, true); render(); toast("Binned"); break;
       case "sample": loadSample(); break;
+      case "scan": startScan(); break;
       case "save-settings": saveSettings(); break;
       case "create-hh": doCreate(); break;
       case "join-hh": doJoin(); break;
