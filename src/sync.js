@@ -25,6 +25,8 @@ window.Data = (() => {
   let spendCats = [];         // custom spend category names
   let budgets = [];           // [{category, monthly}]
   let settlements = [];       // [{id, from, to, amount, date}]
+  let recipes = [];           // [{id, name, servings, ingredients, steps, source, tags, createdBy}]
+  let mealPlan = [];          // [{id, date, recipeId, title}]
   let needsPairing = false;
   const listeners = [];
 
@@ -383,6 +385,57 @@ window.Data = (() => {
     else lsSet(ST_LOCAL, settlements);
   }
 
+  // ---------- Recipes + meal plan (Phase 8) ----------
+  const RP_LOCAL = "pantry.recipes.local", MP_LOCAL = "pantry.mealplan.local";
+  const fromRecipeRow = (r) => ({ id: r.id, name: r.name, servings: r.servings, ingredients: r.ingredients || [], steps: r.steps || [], source: r.source || "manual", tags: r.tags || [], createdBy: r.created_by });
+  const toRecipeRow = (r) => ({ id: r.id, household_id: household && household.id, name: r.name, servings: r.servings || null, ingredients: r.ingredients || [], steps: r.steps || [], source: r.source || "manual", tags: r.tags || [], created_by: r.createdBy || null });
+  const fromMealRow = (r) => ({ id: r.id, date: r.date, recipeId: r.recipe_id, title: r.title });
+  const toMealRow = (r) => ({ id: r.id, household_id: household && household.id, date: r.date, recipe_id: r.recipeId || null, title: r.title });
+
+  async function pullMeals() {
+    if (mode === "cloud" && household) {
+      const [rp, mp] = await Promise.all([
+        sb.from("recipes").select("*").eq("household_id", household.id).order("created_at", { ascending: false }),
+        sb.from("meal_plan").select("*").eq("household_id", household.id).order("date", { ascending: true }),
+      ]);
+      recipes = (rp.data || []).map(fromRecipeRow);
+      mealPlan = (mp.data || []).map(fromMealRow);
+    } else {
+      recipes = lsGet(RP_LOCAL, []); mealPlan = lsGet(MP_LOCAL, []);
+    }
+    emit();
+  }
+  async function addRecipe(r) {
+    r.id = (mode === "cloud") ? uuid() : ("rp" + Math.random().toString(36).slice(2, 9));
+    r.createdBy = r.createdBy || myName();
+    recipes.unshift(r); emit();
+    if (mode === "cloud" && household) { try { const { error } = await sb.from("recipes").insert(toRecipeRow(r)); if (error) throw error; } catch (_) {} }
+    else lsSet(RP_LOCAL, recipes);
+    return r.id;
+  }
+  async function updateRecipe(r) {
+    const i = recipes.findIndex((x) => x.id === r.id); if (i >= 0) recipes[i] = r; emit();
+    if (mode === "cloud" && household) { try { await sb.from("recipes").update(toRecipeRow(r)).eq("id", r.id); } catch (_) {} }
+    else lsSet(RP_LOCAL, recipes);
+  }
+  async function removeRecipe(id) {
+    recipes = recipes.filter((x) => x.id !== id); emit();
+    if (mode === "cloud" && household) { try { await sb.from("recipes").delete().eq("id", id); } catch (_) {} }
+    else lsSet(RP_LOCAL, recipes);
+  }
+  async function addMeal(date, recipeId, title) {
+    const meal = { id: (mode === "cloud") ? uuid() : ("mp" + Math.random().toString(36).slice(2, 9)), date, recipeId: recipeId || null, title };
+    mealPlan.push(meal); emit();
+    if (mode === "cloud" && household) { try { await sb.from("meal_plan").insert(toMealRow(meal)); } catch (_) {} }
+    else lsSet(MP_LOCAL, mealPlan);
+    return meal.id;
+  }
+  async function removeMeal(id) {
+    mealPlan = mealPlan.filter((x) => x.id !== id); emit();
+    if (mode === "cloud" && household) { try { await sb.from("meal_plan").delete().eq("id", id); } catch (_) {} }
+    else lsSet(MP_LOCAL, mealPlan);
+  }
+
   // ---------- Push subscriptions (Phase 4) ----------
   function pushSupported() { return mode === "cloud" && !!household; }
   async function saveSubscription(subJson) {
@@ -401,8 +454,8 @@ window.Data = (() => {
   function loadSample(sample) { sample.forEach((s) => add(s)); }
   async function reset() {
     if (mode === "cloud") { try { if (channel) sb.removeChannel(channel); await sb.auth.signOut(); } catch (_) {} }
-    try { localStorage.removeItem(LS_LOCAL); localStorage.removeItem(RC_LOCAL); localStorage.removeItem(SC_LOCAL); localStorage.removeItem(BD_LOCAL); localStorage.removeItem(ST_LOCAL); if (household) { localStorage.removeItem(cacheKey(household.id)); localStorage.removeItem(outboxKey(household.id)); localStorage.removeItem(importedKey(household.id)); localStorage.removeItem("pantry.receipts.cloud." + household.id); } } catch (_) {}
-    items = []; receipts = []; spendCats = []; budgets = []; settlements = []; household = null; members = [];
+    try { localStorage.removeItem(LS_LOCAL); localStorage.removeItem(RC_LOCAL); localStorage.removeItem(SC_LOCAL); localStorage.removeItem(BD_LOCAL); localStorage.removeItem(ST_LOCAL); localStorage.removeItem(RP_LOCAL); localStorage.removeItem(MP_LOCAL); if (household) { localStorage.removeItem(cacheKey(household.id)); localStorage.removeItem(outboxKey(household.id)); localStorage.removeItem(importedKey(household.id)); localStorage.removeItem("pantry.receipts.cloud." + household.id); } } catch (_) {}
+    items = []; receipts = []; spendCats = []; budgets = []; settlements = []; recipes = []; mealPlan = []; household = null; members = [];
   }
 
   return {
@@ -417,6 +470,8 @@ window.Data = (() => {
     spendCategories: () => spendCats, addSpendCategory,
     budgets: () => budgets, setBudget,
     settlements: () => settlements, addSettlement,
+    recipes: () => recipes, addRecipe, updateRecipe, removeRecipe,
+    mealPlan: () => mealPlan, addMeal, removeMeal, pullMeals,
     pushSupported, saveSubscription, removeSubscription,
     add, update, remove,
     createHousehold, joinHousehold,

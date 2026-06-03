@@ -103,11 +103,27 @@
     return { net, owe };
   }
 
+  // ----- meal planning (Phase 8) -----
+  // Aggregate ingredients across planned recipes, drop anything already in stock.
+  function shoppingFromPlan(recipes, inStockNames) {
+    const stock = (inStockNames || []).map((s) => String(s).toLowerCase().trim()).filter(Boolean);
+    const have = (name) => stock.some((s) => s === name || s.includes(name) || name.includes(s));
+    const agg = {};
+    (recipes || []).forEach((rp) => (rp.ingredients || []).forEach((it) => {
+      const name = String(it.name || "").toLowerCase().trim(); if (!name) return;
+      if (have(name)) return;
+      if (!agg[name]) agg[name] = { name: it.name, qty: 0, unit: it.unit || "", category: CATS.includes(it.category) ? it.category : "packaged" };
+      agg[name].qty += Number(it.qty) || 0;
+    }));
+    return Object.values(agg);
+  }
+
   return {
     DAY, CATS, STATUSES,
     startOfToday, parseISO, toISO, addDays, diffDays, todayISO,
     reasonText, pillClass, freshness, needsAttention,
     spendSince, spendByCategory, validateItem,
     currentYM, monthSpend, budgetProgress, computeBalances,
+    shoppingFromPlan,
   };
 });

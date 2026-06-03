@@ -200,9 +200,10 @@ body {
 .tab {
   position: relative; border: none; background: none; cursor: pointer;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  color: var(--muted); font-size: 11px; font-weight: 600; padding: 4px 10px; min-width: 56px;
+  color: var(--muted); font-size: 10.5px; font-weight: 600; padding: 4px 4px; min-width: 0; flex: 1;
 }
-.tab .tab-ico { font-size: 20px; }
+.tab .tab-ico { font-size: 19px; }
+.tab-add { flex: none; }
 .tab.active { color: var(--green); }
 .tab-add {
   background: var(--green); color: #fff; width: 54px; height: 54px; border-radius: 50%;

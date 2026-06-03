@@ -60,5 +60,18 @@ t("settlement reduces the debt", () => {
   assert.deepStrictEqual(b.owe, { from: "B", to: "A", amount: 300 });
 });
 
+// ----- meal planning -----
+const recipes = [
+  { ingredients: [{ name: "Onion", qty: 2, unit: "pcs", category: "vegetables" }, { name: "Chicken", qty: 500, unit: "g", category: "meat" }] },
+  { ingredients: [{ name: "Onion", qty: 1, unit: "pcs", category: "vegetables" }, { name: "Rice", qty: 200, unit: "g", category: "dry" }] },
+];
+t("shopping list aggregates + skips in-stock", () => {
+  const list = L.shoppingFromPlan(recipes, ["rice"]); // already have rice
+  const names = list.map((x) => x.name).sort();
+  assert.deepStrictEqual(names, ["Chicken", "Onion"]);
+  assert.strictEqual(list.find((x) => x.name === "Onion").qty, 3); // 2 + 1 aggregated
+});
+t("empty stock -> all ingredients", () => assert.strictEqual(L.shoppingFromPlan(recipes, []).length, 3));
+
 console.log(`\n${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

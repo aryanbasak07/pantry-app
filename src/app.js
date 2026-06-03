@@ -33,13 +33,14 @@
 
   // ---------- Router ----------
   let screen = "home";
-  const TITLES = { home: "Today", list: "Shopping list", stock: "In stock", spend: "Spend" };
+  const TITLES = { home: "Today", list: "Shopping list", stock: "In stock", spend: "Spend", meals: "Meals" };
   function setScreen(s) {
     if (s === "add") return openForm();
     screen = s;
     document.getElementById("screen-title").textContent = TITLES[s] || "Pantry";
     document.querySelectorAll(".tab").forEach((t) => t.classList.toggle("active", t.dataset.screen === s));
     if (s === "spend" && Data.pullSpend) Data.pullSpend();
+    if (s === "meals" && Data.pullMeals) Data.pullMeals();
     render();
   }
 
@@ -50,6 +51,7 @@
     else if (screen === "list") app().innerHTML = viewList();
     else if (screen === "stock") app().innerHTML = viewStock();
     else if (screen === "spend") app().innerHTML = viewSpend();
+    else if (screen === "meals") app().innerHTML = viewMeals();
     updateBadges();
   }
   function updateBadges() {
@@ -464,6 +466,162 @@
     if (confirm(`Record that ${bal.owe.from} paid ${bal.owe.to} ${bal.owe.amount}?`)) { Data.addSettlement(bal.owe.from, bal.owe.to, bal.owe.amount); toast("Settled up 👍"); setScreen("spend"); }
   }
 
+  // ----- Meals (recipes + weekly plan) -----
+  function next7Days() {
+    const today = startOfToday(); const out = []; const DOW = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    for (let i = 0; i < 7; i++) { const d = addDays(today, i); out.push({ iso: toISO(d), dom: d.getDate(), dow: i === 0 ? "Today" : DOW[d.getDay()] }); }
+    return out;
+  }
+  function viewMeals() {
+    const recipes = (Data.recipes && Data.recipes()) || [];
+    const plan = (Data.mealPlan && Data.mealPlan()) || [];
+    const att = attentionItems();
+    let h = `<div class="screen">`;
+    if (att.length) {
+      h += `<div class="banner" style="display:flex;justify-content:space-between;align-items:center;gap:10px">
+        <span>♻️ ${att.length} item${att.length > 1 ? "s" : ""} to use up — recipe ideas?</span>
+        <button class="btn btn--primary btn--sm" data-act="suggest-recipes">Ideas</button></div>`;
+    }
+    h += `<div style="display:flex;gap:10px">
+      <button class="btn btn--primary" data-act="find-recipes">🔍 Find recipes</button>
+      <button class="btn btn--ghost" data-act="new-recipe">＋ New recipe</button></div><div style="height:14px"></div>`;
+
+    h += sectionTitle("This week");
+    h += `<div class="card">`;
+    next7Days().forEach((d) => {
+      const meals = plan.filter((p) => p.date === d.iso);
+      h += `<div class="item" style="align-items:flex-start">
+        <div style="flex:none;width:46px;text-align:center"><div style="font-weight:800;font-size:17px">${d.dom}</div><div class="item-sub">${d.dow}</div></div>
+        <div class="item-body">
+          ${meals.length ? meals.map((mp) => `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px"><span data-act="open-recipe" data-id="${mp.recipeId || ""}" style="${mp.recipeId ? "text-decoration:underline" : ""}">${esc(mp.title)}</span><button class="icon-btn" data-act="del-meal" data-id="${mp.id}" style="width:28px;height:28px;font-size:13px">✕</button></div>`).join("") : '<span class="item-sub">No meals planned</span>'}
+          <button class="btn btn--ghost btn--sm" data-act="add-meal" data-date="${d.iso}" style="margin-top:4px">＋ Add meal</button>
+        </div></div>`;
+    });
+    h += `</div>`;
+    if (plan.filter((p) => p.recipeId).length) h += `<div style="height:12px"></div><button class="btn btn--primary" data-act="gen-list">🛒 Generate shopping list from plan</button>`;
+
+    h += sectionTitle("Recipes", recipes.length);
+    if (!recipes.length) {
+      h += `<div class="card" style="padding:16px"><p class="muted-note">No recipes yet. Tap “Find recipes” for AI ideas (saved so you only search once), or “New recipe” to add your own.</p></div>`;
+    } else {
+      h += `<div class="card">`;
+      recipes.forEach((r) => { h += `<div class="item" data-act="open-recipe" data-id="${r.id}"><div class="item-emoji">${r.source === "ai" ? "✨" : "📖"}</div>
+        <div class="item-body"><div class="item-name">${esc(r.name)}</div><div class="item-sub">${(r.ingredients || []).length} ingredients${r.servings ? " · serves " + r.servings : ""}</div></div></div>`; });
+      h += `</div>`;
+    }
+    return h + `</div>`;
+  }
+
+  function openAddMeal(date) {
+    const recipes = (Data.recipes && Data.recipes()) || [];
+    const m = document.createElement("div"); m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>Add a meal</h2>
+      <div class="field"><label>Meal name</label><input type="text" id="mm-title" placeholder="e.g. Pasta — or pick a recipe below" autocomplete="off" /></div>
+      <button class="btn btn--primary" data-act="mm-save">Add to plan</button>
+      <div style="height:14px"></div>
+      ${recipes.length ? `<div class="section-title">Or pick a saved recipe</div><div class="card">${recipes.map((r) => `<div class="item" data-act="mm-pick" data-id="${r.id}"><div class="item-emoji">${r.source === "ai" ? "✨" : "📖"}</div><div class="item-body"><div class="item-name">${esc(r.name)}</div><div class="item-sub">${(r.ingredients || []).length} ingredients</div></div></div>`).join("")}</div>` : ""}
+      <div style="height:10px"></div><button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => {
+      if (e.target === m) return closeModal();
+      const t = e.target.closest("[data-act]"); if (!t) return;
+      if (t.dataset.act === "mm-save") { const title = m.querySelector("#mm-title").value.trim(); if (!title) return toast("Enter a meal name"); Data.addMeal(date, null, title); closeModal(); toast("Added"); render(); }
+      else if (t.dataset.act === "mm-pick") { const r = recipes.find((x) => x.id === t.dataset.id); Data.addMeal(date, r.id, r.name); closeModal(); toast("Added"); render(); }
+      else if (t.dataset.act === "close") closeModal();
+    });
+  }
+
+  function parseIngredient(line) {
+    const mt = line.match(/^([\d.]+)\s*([a-zA-Z]*)\s+(.+)$/);
+    if (mt) return { name: mt[3].trim(), qty: parseFloat(mt[1]) || 1, unit: mt[2] || "", category: "other" };
+    return { name: line, qty: 1, unit: "", category: "other" };
+  }
+  function openNewRecipe() {
+    const m = document.createElement("div"); m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>New recipe</h2>
+      <div class="field"><label>Name</label><input type="text" id="nr-name" autocomplete="off" /></div>
+      <div class="field"><label>Servings</label><input type="number" id="nr-serv" value="2" style="width:100px" /></div>
+      <div class="field"><label>Ingredients <span class="muted-note">(one per line, e.g. “2 Onion”)</span></label><textarea id="nr-ing" placeholder="2 Onion\n500g Chicken\nRice"></textarea></div>
+      <div class="field"><label>Steps <span class="muted-note">(one per line, optional)</span></label><textarea id="nr-steps"></textarea></div>
+      <button class="btn btn--primary" data-act="nr-save">Save recipe</button>
+      <div style="height:8px"></div><button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => {
+      if (e.target === m) return closeModal();
+      const t = e.target.closest("[data-act]"); if (!t) return;
+      if (t.dataset.act === "nr-save") {
+        const name = m.querySelector("#nr-name").value.trim(); if (!name) return toast("Enter a name");
+        const ings = m.querySelector("#nr-ing").value.split("\n").map((s) => s.trim()).filter(Boolean).map(parseIngredient);
+        const steps = m.querySelector("#nr-steps").value.split("\n").map((s) => s.trim()).filter(Boolean);
+        Data.addRecipe({ name, servings: parseInt(m.querySelector("#nr-serv").value, 10) || 2, ingredients: ings, steps, source: "manual", tags: [] });
+        closeModal(); toast("Recipe saved"); render();
+      } else if (t.dataset.act === "close") closeModal();
+    });
+  }
+
+  async function findRecipes(mode) {
+    if (location.protocol === "file:") return alert("Recipe search works on the hosted app (pantry.aryanbasak.com).");
+    let query = "";
+    if (mode === "search") { query = (prompt("What would you like to cook? (e.g. quick chicken dinner)") || "").trim(); if (!query) return; }
+    const ingredients = mode === "suggest" ? attentionItems().map((i) => i.name) : [];
+    toast("Asking Gemini…");
+    try {
+      const resp = await fetch("/api/recipes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, query, ingredients, count: 3 }) });
+      const data = await resp.json();
+      if (!resp.ok) throw new Error(data.error || "failed");
+      showRecipeResults(data.recipes || []);
+    } catch (e) { console.error(e); toast("Couldn't fetch recipes — try again"); }
+  }
+  function showRecipeResults(list) {
+    if (!list.length) return toast("No recipes found");
+    window._foundRecipes = list;
+    const m = document.createElement("div"); m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog"><h2>Recipe ideas</h2>
+      <p class="muted-note">Tap Save to keep one in your library (no more API calls for it).</p>
+      ${list.map((r, i) => `<div class="card" style="padding:14px;margin-bottom:10px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:8px"><strong>${esc(r.name)}</strong><button class="btn btn--primary btn--sm" data-act="save-recipe" data-i="${i}">Save</button></div>
+        <div class="item-sub" style="margin:4px 0 8px">${r.servings ? "serves " + r.servings : ""}${r.time ? " · " + esc(r.time) : ""}</div>
+        <div class="muted-note">${(r.ingredients || []).map((it) => esc((it.qty ? it.qty + (it.unit || "") + " " : "") + it.name)).join(", ")}</div>
+      </div>`).join("")}
+      <button class="btn btn--ghost btn--sm" data-act="close">Close</button></div>`;
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => {
+      if (e.target === m) return closeModal();
+      const t = e.target.closest("[data-act]"); if (!t) return;
+      if (t.dataset.act === "save-recipe") { const r = window._foundRecipes[parseInt(t.dataset.i, 10)]; Data.addRecipe({ name: r.name, servings: r.servings, ingredients: r.ingredients, steps: r.steps, source: "ai", tags: [] }); toast("Saved to recipes"); t.textContent = "Saved ✓"; t.disabled = true; }
+      else if (t.dataset.act === "close") { closeModal(); render(); }
+    });
+  }
+  function openRecipe(id) {
+    if (!id) return;
+    const r = (Data.recipes() || []).find((x) => x.id === id); if (!r) return;
+    const m = document.createElement("div"); m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog"><h2>${esc(r.name)}</h2>
+      <div class="item-sub" style="margin-bottom:10px">${r.servings ? "serves " + r.servings : ""}</div>
+      <div class="section-title">Ingredients</div>
+      <div class="muted-note" style="line-height:1.9">${(r.ingredients || []).map((it) => "• " + esc((it.qty ? it.qty + (it.unit || "") + " " : "") + it.name)).join("<br>")}</div>
+      ${(r.steps && r.steps.length) ? `<div class="section-title">Steps</div><ol class="muted-note" style="line-height:1.7;padding-left:18px">${r.steps.map((s) => `<li>${esc(s)}</li>`).join("")}</ol>` : ""}
+      <div style="height:12px"></div>
+      <button class="btn btn--ghost btn--sm" data-act="recipe-del" data-id="${r.id}" style="color:var(--red)">Delete recipe</button>
+      <div style="height:8px"></div><button class="btn btn--ghost btn--sm" data-act="close">Close</button>
+    </div>`;
+    document.body.appendChild(m);
+    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "recipe-del") { if (confirm("Delete this recipe?")) { Data.removeRecipe(r.id); closeModal(); toast("Deleted"); render(); } } else if (t.dataset.act === "close") closeModal(); });
+  }
+  function generatePlanList() {
+    const recipes = Data.recipes() || [];
+    const planned = (Data.mealPlan() || []).filter((p) => p.recipeId).map((p) => recipes.find((r) => r.id === p.recipeId)).filter(Boolean);
+    if (!planned.length) return toast("Plan some saved recipes first");
+    const list = L.shoppingFromPlan(planned, inStock().map((i) => i.name));
+    if (!list.length) return toast("You already have everything 🎉");
+    list.forEach((it) => { const cat = CATEGORIES[it.category] ? it.category : "packaged"; Data.add({ id: null, name: it.name, category: cat, qty: it.qty || 1, unit: it.unit || CATEGORIES[cat].unit, status: "to_buy", addedBy: Data.myName(), purchasedDate: null, expiryDate: null, freshnessDays: CATEGORIES[cat].freshness, notes: "for meal plan" }); });
+    toast(`Added ${list.length} to shopping list`); setScreen("list");
+  }
+
   // ----- bits -----
   function sectionTitle(label, count) { return `<div class="section-title">${label}${count != null ? ` <span class="count">· ${count}</span>` : ""}</div>`; }
   function empty(em, text, cta) { return `<div class="empty"><div class="em">${em}</div><p>${text}</p>${cta ? `<button class="btn btn--primary btn--sm" data-act="add">${cta}</button>` : ""}</div>`; }
@@ -822,6 +980,13 @@
       case "set-budgets": openBudgets(); break;
       case "settle": doSettle(); break;
       case "edit-receipt": { const r = (Data.receipts() || []).find((x) => x.id === id); if (r) openReceiptReview(r, r.id); break; }
+      case "find-recipes": findRecipes("search"); break;
+      case "suggest-recipes": findRecipes("suggest"); break;
+      case "new-recipe": openNewRecipe(); break;
+      case "add-meal": openAddMeal(el.dataset.date); break;
+      case "del-meal": Data.removeMeal(id); render(); break;
+      case "open-recipe": openRecipe(id); break;
+      case "gen-list": generatePlanList(); break;
       case "save-settings": saveSettings(); break;
       case "create-hh": doCreate(); break;
       case "join-hh": doJoin(); break;

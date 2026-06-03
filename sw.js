@@ -1,6 +1,6 @@
 // Minimal offline cache for the app shell. The app's data lives in
 // localStorage, so once the shell is cached the app works fully offline.
-const CACHE = "pantry-v8";
+const CACHE = "pantry-v9";
 // Note: do NOT list "./index.html" — on Vercel cleanUrls 308-redirects it to "./",
 // and a redirected response makes cache.addAll reject, aborting SW install.
 const SHELL = [
