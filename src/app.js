@@ -189,10 +189,10 @@
   }
   // handle the "＋ New category" option in any .ri-cat <select> inside a modal
   function wireCatSelect(m) {
-    m.addEventListener("change", (e) => {
+    m.addEventListener("change", async (e) => {
       const sel = e.target.closest(".ri-cat"); if (!sel) return;
       if (sel.value === "__new__") {
-        const name = (prompt("New category (e.g. Cigarettes):") || "").trim();
+        const name = ((await promptDialog("New spend category", { placeholder: "e.g. Cigarettes" })) || "").trim();
         if (name) {
           Data.addSpendCategory(name);
           m.querySelectorAll(".ri-cat").forEach((s) => {
@@ -310,7 +310,7 @@
     });
   }
   async function onReceiptFile(file) {
-    if (location.protocol === "file:") return alert("Scanning works on the hosted app (pantry.aryanbasak.com), not when opening the file directly.");
+    if (location.protocol === "file:") return alertDialog("Scanning works on the hosted app (pantry.aryanbasak.com), not when opening the file directly.");
     toast("Reading bill…");
     try {
       const { base64, mimeType } = await downscaleImage(file, 1280, 0.7);
@@ -377,7 +377,7 @@
       if (act === "rtoggle") { items[i].add = !items[i].add; t.classList.toggle("on", items[i].add); }
       else if (act === "rdel") { items[i]._removed = true; t.closest(".item").style.display = "none"; }
       else if (act === "rconfirm") confirmReceipt(m, items, editId);
-      else if (act === "rdelete") { if (confirm("Delete this expense?")) { Data.removeReceipt(editId); closeModal(); toast("Deleted"); setScreen("spend"); } }
+      else if (act === "rdelete") { confirmDialog("Delete this expense?", { danger: true, okText: "Delete" }).then((ok) => { if (ok) { Data.removeReceipt(editId); closeModal(); toast("Deleted"); render(); } }); }
       else if (act === "close") closeModal();
     });
   }
@@ -399,7 +399,7 @@
         Data.add({ id: null, name: it.name, category: cat, qty: it.qty, unit: CATEGORIES[cat].unit, status: "in_stock", addedBy: Data.myName(), purchasedDate: date, expiryDate: null, freshnessDays: CATEGORIES[cat].freshness, notes: "" });
       });
     }
-    closeModal(); toast(editId ? "Saved" : "Spend saved"); setScreen("spend");
+    closeModal(); toast(editId ? "Saved" : "Spend saved"); render();
   }
 
   // ----- Manual expense (quick single entry) -----
@@ -441,7 +441,7 @@
     const shared = v("e-shared") ? v("e-shared").checked : true;
     const name = label || plainCatLabel(cat);
     Data.addReceipt({ store: name, date, currency: v("e-cur").value.trim(), total: amt, paidBy: whoBtn ? whoBtn.dataset.who : Data.myName(), split: shared ? "shared" : "personal", items: [{ name, qty: 1, price: amt, category: cat }] });
-    closeModal(); toast("Expense saved"); setScreen("spend");
+    closeModal(); toast("Expense saved"); render();
   }
 
   // ----- Budgets -----
@@ -461,14 +461,14 @@
       <button class="btn btn--ghost btn--sm" data-act="close">Cancel</button>
     </div>`;
     document.body.appendChild(m);
-    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "save-budgets") { m.querySelectorAll(".bd-input").forEach((inp) => Data.setBudget(inp.dataset.cat, parseFloat(inp.value) || 0)); closeModal(); toast("Budgets saved"); setScreen("spend"); } else if (t.dataset.act === "close") closeModal(); });
+    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "save-budgets") { m.querySelectorAll(".bd-input").forEach((inp) => Data.setBudget(inp.dataset.cat, parseFloat(inp.value) || 0)); closeModal(); toast("Budgets saved"); render(); } else if (t.dataset.act === "close") closeModal(); });
   }
 
-  function doSettle() {
+  async function doSettle() {
     const rs = Data.receipts() || []; const members = Data.memberNames(); const settlements = Data.settlements() || [];
     const bal = L.computeBalances(rs, members, settlements);
     if (!bal.owe) return toast("Nothing to settle");
-    if (confirm(`Record that ${bal.owe.from} paid ${bal.owe.to} ${bal.owe.amount}?`)) { Data.addSettlement(bal.owe.from, bal.owe.to, bal.owe.amount); toast("Settled up 👍"); setScreen("spend"); }
+    if (await confirmDialog(`Record that ${bal.owe.from} paid ${bal.owe.to} ${bal.owe.amount}?`, { okText: "Settle up" })) { Data.addSettlement(bal.owe.from, bal.owe.to, bal.owe.amount); toast("Settled up 👍"); render(); }
   }
 
   // ----- Meals (recipes + weekly plan) -----
@@ -569,9 +569,9 @@
   }
 
   async function findRecipes(mode) {
-    if (location.protocol === "file:") return alert("Recipe search works on the hosted app (pantry.aryanbasak.com).");
+    if (location.protocol === "file:") return alertDialog("Recipe search works on the hosted app (pantry.aryanbasak.com).");
     let query = "";
-    if (mode === "search") { query = (prompt("What would you like to cook? (e.g. quick chicken dinner)") || "").trim(); if (!query) return; }
+    if (mode === "search") { query = ((await promptDialog("What would you like to cook?", { placeholder: "e.g. quick chicken dinner" })) || "").trim(); if (!query) return; }
     const ingredients = mode === "suggest" ? attentionItems().map((i) => i.name) : [];
     toast("Asking Gemini…");
     try {
@@ -615,7 +615,7 @@
       <div style="height:8px"></div><button class="btn btn--ghost btn--sm" data-act="close">Close</button>
     </div>`;
     document.body.appendChild(m);
-    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "recipe-del") { if (confirm("Delete this recipe?")) { Data.removeRecipe(r.id); closeModal(); toast("Deleted"); render(); } } else if (t.dataset.act === "close") closeModal(); });
+    m.addEventListener("click", (e) => { if (e.target === m) return closeModal(); const t = e.target.closest("[data-act]"); if (!t) return; if (t.dataset.act === "recipe-del") { confirmDialog("Delete this recipe?", { danger: true, okText: "Delete" }).then((ok) => { if (ok) { Data.removeRecipe(r.id); closeModal(); toast("Deleted"); render(); } }); } else if (t.dataset.act === "close") closeModal(); });
   }
   function generatePlanList() {
     const recipes = Data.recipes() || [];
@@ -674,7 +674,7 @@
   }
   function showCodeOnce() {
     const code = Data.inviteCode && Data.inviteCode();
-    if (code) setTimeout(() => alert(`Your pairing code is ${code}\n\nOpen the app on the other phone, tap Join, and enter this code.`), 300);
+    if (code) setTimeout(() => alertDialog(`Your pairing code is ${code}\n\nOpen the app on the other phone, tap Join, and enter this code.`), 300);
   }
 
   // ---------- Add / Edit form ----------
@@ -747,7 +747,7 @@
     toast(editing ? "Saved" : instock ? "Added to stock" : "Added to list");
     render();
   }
-  function closeModal() { const m = document.querySelector(".modal-backdrop"); if (m) m.remove(); }
+  function closeModal() { const ms = document.querySelectorAll(".modal-backdrop"); if (ms.length) ms[ms.length - 1].remove(); }
 
   // ---------- Settings ----------
   function openSettings() {
@@ -764,6 +764,8 @@
              <button class="btn btn--ghost btn--sm" data-act="rotate-code">Generate new code</button><div style="height:12px"></div>` : ""}
            <div class="field"><label>Your name</label><input type="text" id="s-me" value="${esc(Data.myName())}" /></div>
            <button class="btn btn--primary" data-act="save-settings">Save</button>
+           <div style="height:10px"></div>
+           <button class="btn btn--ghost btn--sm" data-act="manage-members">👥 Manage members</button>
            <div class="toggle-row" style="margin-top:16px">
              <span class="t-lbl">🔔 Morning alerts</span>
              <label class="switch"><input type="checkbox" id="s-alerts" /><span class="slider"></span></label>
@@ -795,6 +797,37 @@
         else { await disableNotifications(); }
       });
     }
+  }
+
+  function openMembers() {
+    const list = Data.membersDetailed ? Data.membersDetailed() : [];
+    const iAmOwner = Data.isOwner && Data.isOwner();
+    const m = document.createElement("div"); m.className = "modal-backdrop";
+    m.innerHTML = `<div class="modal" role="dialog">
+      <h2>Members</h2>
+      <p class="muted-note">Every device that joins is its own member. Rename or remove duplicates (e.g. your old phones).</p>
+      <div class="card">${list.map((mb) => `<div class="item">
+        <div class="item-emoji">${mb.isOwner ? "👑" : "👤"}</div>
+        <div class="item-body"><div class="item-name">${esc(mb.name)}${mb.isMe ? ' <span class="muted-note">(this device)</span>' : ""}</div></div>
+        <div class="row-actions">
+          <button class="icon-btn" data-act="m-rename" data-user="${esc(mb.userId)}" title="Rename">✏️</button>
+          ${iAmOwner && !mb.isOwner ? `<button class="icon-btn" data-act="m-owner" data-user="${esc(mb.userId)}" title="Make owner">👑</button>` : ""}
+          ${!mb.isMe ? `<button class="icon-btn" data-act="m-remove" data-user="${esc(mb.userId)}" title="Remove">🗑</button>` : ""}
+        </div></div>`).join("")}</div>
+      <div style="height:10px"></div>
+      <button class="btn btn--ghost btn--sm" data-act="close">Close</button>
+    </div>`;
+    document.body.appendChild(m);
+    const reopen = () => { closeModal(); openMembers(); render(); };
+    m.addEventListener("click", (e) => {
+      if (e.target === m) return closeModal();
+      const t = e.target.closest("[data-act]"); if (!t) return;
+      const user = t.dataset.user, act = t.dataset.act;
+      const cur = list.find((x) => x.userId === user);
+      if (act === "m-rename") promptDialog("Rename member", { value: cur ? cur.name : "" }).then((name) => { if (name != null && name.trim()) Data.renameMember(user, name).then(reopen); });
+      else if (act === "m-remove") confirmDialog(`Remove “${cur ? cur.name : "this member"}” from the kitchen?`, { danger: true, okText: "Remove" }).then((ok) => { if (ok) Data.removeMember(user).then(reopen); });
+      else if (act === "m-owner") confirmDialog(`Make “${cur ? cur.name : "this member"}” the owner?`, { okText: "Transfer" }).then((ok) => { if (ok) Data.transferOwnership(user).then(reopen); });
+    });
   }
 
   async function fillDiag() {
@@ -829,14 +862,14 @@
     // iOS: web push only exists inside the installed Home-Screen app.
     if (isIOS() && !isStandalone()) { showIOSInstallHelp(); return false; }
     if (!("serviceWorker" in navigator) || !("PushManager" in window) || typeof Notification === "undefined") {
-      alert(isIOS()
+      alertDialog(isIOS()
         ? "Notifications need the installed app. Add Pantry to your Home Screen (Safari → Share → Add to Home Screen) and open it from there, then turn alerts on."
         : "This browser doesn't support notifications. Try Chrome, Edge, or Safari.");
       return false;
     }
-    if (Data.mode() !== "cloud" || !Data.pushSupported()) { alert("Create or join a shared kitchen first (the pairing step), then enable alerts."); return false; }
+    if (Data.mode() !== "cloud" || !Data.pushSupported()) { alertDialog("Create or join a shared kitchen first (the pairing step), then enable alerts."); return false; }
     if (Notification.permission === "denied") {
-      alert("Notifications are blocked for this app. On iPhone: Settings → Notifications → Pantry → Allow. On Chrome: site settings → Notifications → Allow. Then try again.");
+      alertDialog("Notifications are blocked for this app. On iPhone: Settings → Notifications → Pantry → Allow. On Chrome: site settings → Notifications → Allow. Then try again.");
       return false;
     }
     try {
@@ -848,7 +881,7 @@
       await Data.saveSubscription(sub.toJSON());
       try { await reg.showNotification("Morning alerts are on ✓", { body: "You'll get a daily nudge when food needs eating.", icon: "./public/icon-192.png", badge: "./public/icon-192.png" }); } catch (_) {}
       toast("Morning alerts on"); return true;
-    } catch (e) { console.error(e); alert("Couldn't enable alerts: " + ((e && e.message) || e)); return false; }
+    } catch (e) { console.error(e); alertDialog("Couldn't enable alerts: " + ((e && e.message) || e)); return false; }
   }
   async function disableNotifications() {
     try {
@@ -895,6 +928,49 @@
     }
     el.hidden = false; clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { el.hidden = true; }, action ? 5000 : 1800);
+  }
+
+  // ---------- Custom dialogs (replace browser confirm/alert/prompt) ----------
+  function makeDialog(inner) {
+    const m = document.createElement("div");
+    m.className = "modal-backdrop modal-backdrop--center";
+    m.innerHTML = `<div class="modal modal--dialog" role="dialog" aria-modal="true">${inner}</div>`;
+    document.body.appendChild(m);
+    return m;
+  }
+  function confirmDialog(message, opts = {}) {
+    return new Promise((resolve) => {
+      const m = makeDialog(`${opts.title ? `<h2>${esc(opts.title)}</h2>` : ""}
+        <p class="dlg-msg">${esc(message)}</p>
+        <button class="btn ${opts.danger ? "btn--danger" : "btn--primary"}" data-x="ok">${esc(opts.okText || "Confirm")}</button>
+        <div style="height:8px"></div>
+        <button class="btn btn--ghost btn--sm" data-x="cancel">${esc(opts.cancelText || "Cancel")}</button>`);
+      const done = (v) => { m.remove(); resolve(v); };
+      m.addEventListener("click", (e) => { if (e.target === m) return done(false); const t = e.target.closest("[data-x]"); if (t) done(t.dataset.x === "ok"); });
+    });
+  }
+  function alertDialog(message, opts = {}) {
+    return new Promise((resolve) => {
+      const m = makeDialog(`${opts.title ? `<h2>${esc(opts.title)}</h2>` : ""}
+        <p class="dlg-msg">${esc(message)}</p>
+        <button class="btn btn--primary" data-x="ok">${esc(opts.okText || "OK")}</button>`);
+      const done = () => { m.remove(); resolve(); };
+      m.addEventListener("click", (e) => { if (e.target === m) return done(); if (e.target.closest("[data-x]")) done(); });
+    });
+  }
+  function promptDialog(message, opts = {}) {
+    return new Promise((resolve) => {
+      const m = makeDialog(`${opts.title ? `<h2>${esc(opts.title)}</h2>` : ""}
+        <p class="dlg-msg">${esc(message)}</p>
+        <input type="text" class="dlg-input" id="dlg-input" value="${esc(opts.value || "")}" placeholder="${esc(opts.placeholder || "")}" autocomplete="off" />
+        <button class="btn btn--primary" data-x="ok">${esc(opts.okText || "OK")}</button>
+        <div style="height:8px"></div>
+        <button class="btn btn--ghost btn--sm" data-x="cancel">Cancel</button>`);
+      const inp = m.querySelector("#dlg-input"); setTimeout(() => inp.focus(), 60);
+      const done = (v) => { m.remove(); resolve(v); };
+      inp.addEventListener("keydown", (e) => { if (e.key === "Enter") done(inp.value); });
+      m.addEventListener("click", (e) => { if (e.target === m) return done(null); const t = e.target.closest("[data-x]"); if (t) done(t.dataset.x === "ok" ? inp.value : null); });
+    });
   }
 
   // ---------- Install prompt (Add to Home Screen) ----------
@@ -954,7 +1030,7 @@
     if (isStandalone()) { toast("Already installed ✓"); return; }
     if (isIOS()) { showIOSInstallHelp(); return; }
     if (!deferredInstall) {
-      alert("No install prompt yet. Reload the page once, then either use this button again or open Chrome's ⋮ menu → “Install Pantry…”. (Chrome marks the app installable a few seconds after loading.)");
+      alertDialog("No install prompt yet. Reload the page once, then either use this button again or open Chrome's ⋮ menu → “Install Pantry…”. (Chrome marks the app installable a few seconds after loading.)");
       return;
     }
     deferredInstall.prompt();
@@ -993,15 +1069,16 @@
       case "open-recipe": openRecipe(id); break;
       case "gen-list": generatePlanList(); break;
       case "save-settings": saveSettings(); break;
+      case "manage-members": openMembers(); break;
       case "create-hh": doCreate(); break;
       case "join-hh": doJoin(); break;
-      case "rotate-code": if (confirm("Generate a new pairing code? The old one stops working.")) { Data.rotateInviteCode().then((c) => { closeModal(); openSettings(); toast("New code: " + c); }).catch(() => toast("Couldn't rotate code")); } break;
+      case "rotate-code": confirmDialog("Generate a new pairing code? The old one stops working.", { okText: "New code" }).then((ok) => { if (ok) Data.rotateInviteCode().then((c) => { closeModal(); openSettings(); toast("New code: " + c); }).catch(() => toast("Couldn't rotate code")); }); break;
       case "import": Data.importLocalItems().then(() => { render(); toast("Imported"); }); break;
       case "skip-import": Data.skipImport(); render(); break;
       case "install-now": doInstall(); break;
       case "ios-help": showIOSInstallHelp(); break;
       case "install-dismiss": dismissInstall(); break;
-      case "reset": if (confirm("Clear all data on this device?")) { Data.reset().then(() => { setScreen("home"); toast("Cleared"); }); } break;
+      case "reset": confirmDialog("Clear all data on this device?", { danger: true, okText: "Clear" }).then((ok) => { if (ok) { closeModal(); Data.reset().then(() => { setScreen("home"); toast("Cleared"); }); } }); break;
       case "close": closeModal(); break;
     }
   });

@@ -148,6 +148,7 @@ body {
 }
 .btn--primary { background: var(--green); color: #fff; }
 .btn--ghost { background: var(--card); color: var(--ink); box-shadow: var(--shadow); }
+.btn--danger { background: var(--red); color: #fff; }
 .btn--sm { width: auto; padding: 9px 14px; font-size: 14px; border-radius: 10px; }
 .btn:active { transform: scale(0.98); }
 
@@ -251,6 +252,10 @@ body {
 }
 @keyframes up { from { transform: translateY(40px); } to { transform: none; } }
 .modal h2 { margin: 4px 0 18px; font-size: 19px; }
+.modal--dialog { border-radius: 18px; margin: auto auto 12px; max-width: 440px; }
+.modal-backdrop--center { align-items: center; }
+.dlg-msg { font-size: 15px; line-height: 1.5; margin: 2px 0 18px; color: var(--ink); white-space: pre-line; }
+.dlg-input { width: 100%; padding: 13px 14px; border: 1px solid var(--line); border-radius: 12px; font-size: 16px; margin-bottom: 14px; background: var(--card); color: var(--ink); }
 .muted-note { color: var(--muted); font-size: 13px; line-height: 1.5; }
 .divider { height: 1px; background: var(--line); margin: 18px 0; }
 .banner {

@@ -97,7 +97,7 @@ window.Data = (() => {
   async function loadHousehold() {
     const { data, error } = await sb
       .from("household_members")
-      .select("name, households(id,name,invite_code)")
+      .select("name, households(id,name,invite_code,owner_user_id)")
       .eq("user_id", uid)
       .limit(1);
     if (error) throw error;
@@ -294,6 +294,28 @@ window.Data = (() => {
   function setLocalNames(me, partner) {
     const st = localState(); st.members = [me || "Me", partner || "Partner"]; st.me = 0; saveLocal(st);
   }
+  function membersDetailed() {
+    if (mode === "cloud") return members.map((m) => ({ userId: m.user_id, name: m.name, isMe: m.user_id === uid, isOwner: !!(household && household.owner_user_id === m.user_id) }));
+    const st = localState(); return st.members.map((n, i) => ({ userId: "local" + i, name: n, isMe: i === 0, isOwner: i === 0 }));
+  }
+  function isOwner() { return !!(household && household.owner_user_id === uid); }
+  async function renameMember(userId, name) {
+    name = (name || "").trim() || "Member";
+    if (mode !== "cloud") { const st = localState(); const i = st.members.findIndex((x, idx) => "local" + idx === userId); if (i >= 0) { st.members[i] = name; saveLocal(st); emit(); } return; }
+    await sb.from("household_members").update({ name }).eq("household_id", household.id).eq("user_id", userId);
+    await refreshMembers(); emit();
+  }
+  async function removeMember(userId) {
+    if (mode !== "cloud" || userId === uid) return;
+    await sb.from("household_members").delete().eq("household_id", household.id).eq("user_id", userId);
+    try { await sb.from("push_subscriptions").delete().eq("household_id", household.id).eq("user_id", userId); } catch (_) {}
+    await refreshMembers(); emit();
+  }
+  async function transferOwnership(userId) {
+    if (mode !== "cloud") return;
+    await sb.from("households").update({ owner_user_id: userId }).eq("id", household.id);
+    household.owner_user_id = userId; emit();
+  }
 
   // ---------- Import local items into the shared kitchen ----------
   function hasLocalItems() { return localState().items.length > 0; }
@@ -480,6 +502,7 @@ window.Data = (() => {
     add, update, remove,
     createHousehold, joinHousehold,
     memberNames, myName, setMyName, setLocalNames,
+    membersDetailed, isOwner, renameMember, removeMember, transferOwnership,
     importPending, importLocalItems, skipImport, hasLocalItems,
     loadSample, reset,
   };
