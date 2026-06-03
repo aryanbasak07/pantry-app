@@ -45,13 +45,18 @@
   }
 
   const app = () => document.getElementById("app");
+  let _lastHtml = null, _lastKey = null;
   function render() {
-    if (Data.needsPairing && Data.needsPairing()) return renderPairing();
-    if (screen === "home") app().innerHTML = viewHome();
-    else if (screen === "list") app().innerHTML = viewList();
-    else if (screen === "stock") app().innerHTML = viewStock();
-    else if (screen === "spend") app().innerHTML = viewSpend();
-    else if (screen === "meals") app().innerHTML = viewMeals();
+    if (Data.needsPairing && Data.needsPairing()) { renderPairing(); _lastKey = "pairing"; updateBadges(); return; }
+    let html = "";
+    if (screen === "home") html = viewHome();
+    else if (screen === "list") html = viewList();
+    else if (screen === "stock") html = viewStock();
+    else if (screen === "spend") html = viewSpend();
+    else if (screen === "meals") html = viewMeals();
+    // Only touch the DOM when something actually changed — prevents repaint flicker
+    // from redundant re-renders (e.g. realtime/sync emits with no data change).
+    if (html !== _lastHtml || screen !== _lastKey) { app().innerHTML = html; _lastHtml = html; _lastKey = screen; }
     updateBadges();
   }
   function updateBadges() {

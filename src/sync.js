@@ -137,8 +137,9 @@ window.Data = (() => {
   }
 
   // ---------- Realtime (resilient: status-aware + auto-reconnect) ----------
-  let channel = null, receiptChannel = null;
+  let channel = null, receiptChannel = null, subToken = 0;
   function teardownChannels() {
+    subToken++; // invalidate any in-flight status callbacks from old channels
     try { if (channel) sb.removeChannel(channel); if (receiptChannel) sb.removeChannel(receiptChannel); } catch (_) {}
     channel = null; receiptChannel = null; channelJoined = false;
   }
@@ -154,11 +155,13 @@ window.Data = (() => {
   }
   function subscribe() {
     teardownChannels();
+    const myToken = ++subToken;
     channel = sb.channel("items-" + household.id)
       .on("postgres_changes", { event: "*", schema: "public", table: "items", filter: "household_id=eq." + household.id }, handleItemChange)
       .subscribe((status) => {
-        if (status === "SUBSCRIBED") { channelJoined = true; reconnectBackoff = 1000; resync(); emit(); }
-        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") { channelJoined = false; scheduleReconnect(); emit(); }
+        if (myToken !== subToken) return; // stale callback from a torn-down channel
+        if (status === "SUBSCRIBED") { if (!channelJoined) { channelJoined = true; resync(); emit(); } }
+        else if (status === "CHANNEL_ERROR" || status === "TIMED_OUT" || status === "CLOSED") { if (channelJoined) { channelJoined = false; emit(); } scheduleReconnect(); }
       });
     receiptChannel = sb.channel("receipts-" + household.id)
       .on("postgres_changes", { event: "*", schema: "public", table: "receipts", filter: "household_id=eq." + household.id }, handleReceiptChange)
@@ -176,6 +179,7 @@ window.Data = (() => {
   }
   function onResume() {
     online = (typeof navigator !== "undefined" && "onLine" in navigator) ? navigator.onLine : true;
+    reconnectBackoff = 1000; // user is back — retry connection promptly
     if (mode === "cloud" && household) { if (!channelJoined) subscribe(); else resync(); flushOutbox(); }
     emit();
   }
