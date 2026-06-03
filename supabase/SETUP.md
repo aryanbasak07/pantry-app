@@ -12,9 +12,11 @@ This takes ~5 minutes. You do steps 1–4; then send me two values and I wire + 
 - Open `supabase/schema.sql` from this repo, copy all of it, paste, click **Run**.
 - You should see "Success. No rows returned." That builds the tables, security rules, and the create/join-household functions.
 
-## 3. Turn on email login (magic links)
-- **Authentication → Providers → Email**: make sure it's enabled (it is by default).
-- That's it — no passwords. You each log in by clicking a link sent to your email.
+## 3. Turn on anonymous sessions (no login!)
+- **Authentication → Sign In / Providers → Anonymous Sign-Ins** → enable it.
+- This lets the app create a silent, password-free session on each phone. You never
+  see a login screen. Your data stays private because only phones that have joined
+  your kitchen (via the pairing code) can read it.
 
 ## 4. Copy two values for me
 - **Project Settings → API**, copy:
@@ -30,9 +32,9 @@ SUPABASE_ANON_KEY = eyJ....
 ```
 
 ## What happens after that (I build & test it)
-- A **login screen** (enter email → click the magic link).
-- First time in: **Create our kitchen** → you get a 6-char invite code.
-- Your girlfriend logs in, taps **Join**, enters the code → you're now sharing one list.
+- **No login screen.** The app signs in silently in the background.
+- First phone: tap **Create our kitchen** → you get a 6-char pairing code.
+- Second phone: tap **Join**, type the code once → you're now sharing one list.
 - After that: when either of you checks off, adds, or uses an item, it appears on the
   other phone **instantly** (realtime sync). Works offline too and syncs when back online.
 
