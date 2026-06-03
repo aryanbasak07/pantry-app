@@ -1,6 +1,8 @@
 // Vercel serverless function: receive a receipt image, ask Gemini to parse it
 // into structured line items, return JSON. The Gemini key stays server-side
 // (set GEMINI_API_KEY in Vercel → Project Settings → Environment Variables).
+const { generate, extractText } = require("./_gemini");
+
 module.exports = async (req, res) => {
   if (req.method !== "POST") {
     res.setHeader("Allow", "POST");
@@ -37,19 +39,9 @@ module.exports = async (req, res) => {
       generationConfig: { temperature: 0, responseMimeType: "application/json" },
     };
 
-    const model = body.model || process.env.GEMINI_MODEL || "gemini-2.5-flash";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const j = await r.json();
-    if (!r.ok) return res.status(502).json({ error: "Gemini request failed", detail: j });
-
-    const text =
-      (j.candidates && j.candidates[0] && j.candidates[0].content &&
-       j.candidates[0].content.parts && j.candidates[0].content.parts[0].text) || "";
+    const out = await generate(payload, key, { models: body.model ? [body.model] : undefined });
+    if (!out.ok) return res.status(502).json({ error: "Gemini request failed", detail: out.error });
+    const text = extractText(out.json);
     let parsed;
     try { parsed = JSON.parse(text); }
     catch (_) { const m = text.match(/\{[\s\S]*\}/); parsed = m ? JSON.parse(m[0]) : null; }

@@ -1,6 +1,8 @@
 // Vercel serverless function: ask Gemini for recipes — either "suggest" (use up
 // expiring ingredients) or "search" (by query). Returns structured recipes the
 // app saves to its library so the API is only called once per search.
+const { generate, extractText } = require("./_gemini");
+
 module.exports = async (req, res) => {
   if (req.method !== "POST") { res.setHeader("Allow", "POST"); return res.status(405).json({ error: "Use POST" }); }
   const key = process.env.GEMINI_API_KEY;
@@ -20,15 +22,10 @@ Return ONLY a JSON array. Each element:
  "steps": [string]}
 Use simple ingredient names ("Onion", "Chicken breast"). qty is a number; unit like "g","ml","pcs","tbsp","cup".`;
 
-    const model = body.model || process.env.GEMINI_MODEL || "gemini-2.5-flash";
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${key}`;
-    const r = await fetch(url, {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, responseMimeType: "application/json" } }),
-    });
-    const j = await r.json();
-    if (!r.ok) return res.status(502).json({ error: "Gemini request failed", detail: j });
-    const text = (j.candidates && j.candidates[0] && j.candidates[0].content && j.candidates[0].content.parts && j.candidates[0].content.parts[0].text) || "";
+    const payload = { contents: [{ parts: [{ text: prompt }] }], generationConfig: { temperature: 0.4, responseMimeType: "application/json" } };
+    const out = await generate(payload, key, { models: body.model ? [body.model] : undefined });
+    if (!out.ok) return res.status(502).json({ error: "Gemini request failed", detail: out.error });
+    const text = extractText(out.json);
     let parsed; try { parsed = JSON.parse(text); } catch (_) { const m = text.match(/\[[\s\S]*\]/); parsed = m ? JSON.parse(m[0]) : null; }
     if (!Array.isArray(parsed)) return res.status(502).json({ error: "Could not parse recipes", raw: text });
 
