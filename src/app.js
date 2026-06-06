@@ -316,7 +316,7 @@
       const { base64, mimeType } = await downscaleImage(file, 1280, 0.7);
       const resp = await fetch("/api/parse-receipt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ imageBase64: base64, mimeType }) });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || "Scan failed");
+      if (!resp.ok) { aiError(data); return; }
       openReceiptReview(data);
     } catch (e) { console.error(e); toast("Couldn't read that bill — try again"); }
   }
@@ -577,9 +577,16 @@
     try {
       const resp = await fetch("/api/recipes", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, query, ingredients, count: 3 }) });
       const data = await resp.json();
-      if (!resp.ok) throw new Error(data.error || "failed");
+      if (!resp.ok) { aiError(data); return; }
       showRecipeResults(data.recipes || []);
     } catch (e) { console.error(e); toast("Couldn't fetch recipes — try again"); }
+  }
+  // Friendly message for backend Gemini failures (esp. 403 key denial / 429 quota).
+  function aiError(data) {
+    const code = data && data.detail && data.detail.code;
+    if (code === 403) return alertDialog("The AI service (Gemini) is unavailable — the API key was denied access by Google and needs to be renewed. Everything else in the app still works.", { title: "AI unavailable" });
+    if (code === 429) return alertDialog("The AI is rate-limited right now. Please try again in a minute.", { title: "AI busy" });
+    toast("AI request failed");
   }
   function showRecipeResults(list) {
     if (!list.length) return toast("No recipes found");
